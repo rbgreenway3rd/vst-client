@@ -92,6 +92,10 @@ export const addSensor = (baseUrl, authToken, sensorData) =>
 export const removeSensor = (baseUrl, authToken, id) =>
   apiCall(baseUrl, `/v1/sensor/${id}`, { method: "DELETE", authToken });
 
+// Get sensor QoS stats
+export const getSensorQOS = (baseUrl, authToken) =>
+  apiCall(baseUrl, "/v1/sensor/qos", { method: "GET", authToken });
+
 // =====================
 // === Live Stream   ===
 // =====================
@@ -126,13 +130,40 @@ export const queryLiveStream = (baseUrl, authToken, params = {}) =>
 //     method: "GET",
 //     authToken,
 //   });
-// Start WebRTC streaming
-export const startLiveStream = (baseUrl, authToken, streamId, sdpOffer) =>
-  apiCall(baseUrl, "/v1/live/stream/start", {
-    method: "POST",
-    data: { stream_id: streamId, sdp_offer: sdpOffer },
-    authToken,
+// Start WebRTC streaming - Use VST's official UI format
+export const startLiveStream = (
+  baseUrl,
+  authToken,
+  peerId,
+  sdpOffer,
+  sensorId
+) => {
+  const data = {
+    streamId: sensorId, // VST uses streamId as the sensor ID
+    peerId,
+    options: {
+      rtptransport: "udp",
+      timeout: 60,
+      quality: "auto",
+    },
+    sessionDescription: {
+      type: "offer",
+      sdp: sdpOffer,
+    },
+  };
+
+  console.log("startLiveStream request (VST UI format):", {
+    url: `${baseUrl}/v1/live/stream/start`,
+    payload: data,
   });
+
+  return apiCall(baseUrl, "/v1/live/stream/start", {
+    method: "POST",
+    data,
+    authToken,
+    timeout: 30000, // 30 second timeout
+  });
+};
 
 // Switch stream type from recorded to live
 export const swapToLiveStream = (baseUrl, authToken, streamId) =>
@@ -464,6 +495,33 @@ export const downloadFile = (baseUrl, authToken, fileId) =>
 // === RTSP Proxy Stream  ===
 // ==========================
 
-// Create RTSP proxy
-export const createRTSPProxy = (baseUrl, authToken, uri) =>
-  apiCall(baseUrl, "/rtsp/proxy", { method: "POST", data: { uri }, authToken });
+// Create RTSP proxy - Try multiple possible endpoints
+export const createRTSPProxy = async (baseUrl, authToken, uri) => {
+  const endpoints = [
+    "/v1/proxy/rtsp/create", // Original attempt
+    "/v1/rtsp/proxy/create", // Alternative 1
+    "/v1/proxy/create", // Alternative 2
+    "/rtsp/proxy/create", // Alternative 3
+  ];
+
+  let lastError;
+  for (const endpoint of endpoints) {
+    try {
+      console.log(`Trying RTSP proxy endpoint: ${endpoint}`);
+      return await apiCall(baseUrl, endpoint, {
+        method: "POST",
+        data: { uri },
+        authToken,
+      });
+    } catch (error) {
+      console.warn(`Endpoint ${endpoint} failed:`, error.message);
+      lastError = error;
+      // Continue to next endpoint
+    }
+  }
+
+  throw new Error(
+    `All RTSP proxy endpoints failed. VST may not support RTSP→HLS conversion. ` +
+      `Last error: ${lastError.message}`
+  );
+};

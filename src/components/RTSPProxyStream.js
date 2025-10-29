@@ -20,24 +20,27 @@ const RTSPProxyStream = ({ baseUrl, authToken, onError }) => {
   const [player, setPlayer] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    fetchSensors();
-    return () => {
-      if (player) player.dispose();
-    };
-  }, [baseUrl, authToken]);
-
   const fetchSensors = async () => {
     setLoading(true);
     try {
       const data = await getSensors(baseUrl, authToken);
-      setSensors(data.sensors || []);
+      console.log("Fetched sensors for RTSP Proxy:", data);
+      setSensors(Array.isArray(data) ? data : data.sensors || []);
     } catch (error) {
+      console.error("Failed to fetch sensors for RTSP Proxy:", error);
       onError(error);
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    fetchSensors();
+    return () => {
+      if (player) player.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl, authToken]);
 
   const createProxy = async () => {
     if (!selectedSensor) {
@@ -46,12 +49,22 @@ const RTSPProxyStream = ({ baseUrl, authToken, onError }) => {
     }
     setLoading(true);
     try {
-      const sensor = sensors.find((s) => s.id === selectedSensor);
-      if (!sensor?.uri) {
-        onError("Selected sensor has no valid RTSP URI");
+      const sensor = sensors.find(
+        (s) => (s.id || s.sensorId) === selectedSensor
+      );
+      if (!sensor) {
+        onError("Selected sensor not found");
         return;
       }
-      const data = await createRTSPProxy(baseUrl, authToken, sensor.uri);
+
+      // Construct RTSP URL using VST's RTSP proxy pattern
+      // Format: rtsp://<vst-host>:8554/live/<sensor-id>
+      const vstHost = new URL(baseUrl).hostname;
+      const sensorId = sensor.id || sensor.sensorId;
+      const rtspUrl = `rtsp://${vstHost}:8554/live/${sensorId}`;
+
+      console.log("Creating proxy for RTSP URL:", rtspUrl);
+      const data = await createRTSPProxy(baseUrl, authToken, rtspUrl);
       const url = data.proxy_url;
       setProxiedUrl(url);
       if (videoRef.current && url) {
@@ -80,11 +93,17 @@ const RTSPProxyStream = ({ baseUrl, authToken, onError }) => {
         <Typography>Loading...</Typography>
       ) : (
         <>
+          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+            {sensors.length} sensor(s) available
+          </Typography>
           <FormControl fullWidth sx={{ mb: 2 }}>
             <InputLabel>Select Sensor</InputLabel>
             <Select
               value={selectedSensor}
-              onChange={(e) => setSelectedSensor(e.target.value)}
+              onChange={(e) => {
+                console.log("Selected sensor:", e.target.value);
+                setSelectedSensor(e.target.value);
+              }}
               disabled={sensors.length === 0}
             >
               {sensors.length === 0 ? (
@@ -92,11 +111,19 @@ const RTSPProxyStream = ({ baseUrl, authToken, onError }) => {
                   No sensors available
                 </MenuItem>
               ) : (
-                sensors.map((sensor) => (
-                  <MenuItem key={sensor.id} value={sensor.id}>
-                    {sensor.name} ({sensor.uri})
-                  </MenuItem>
-                ))
+                sensors.map((sensor) => {
+                  const vstHost = new URL(baseUrl).hostname;
+                  const sensorId = sensor.id || sensor.sensorId;
+                  const rtspUrl = `rtsp://${vstHost}:8554/live/${sensorId}`;
+                  return (
+                    <MenuItem
+                      key={sensor.id || sensor.sensorId}
+                      value={sensor.id || sensor.sensorId}
+                    >
+                      {sensor.name} ({rtspUrl})
+                    </MenuItem>
+                  );
+                })
               )}
             </Select>
           </FormControl>

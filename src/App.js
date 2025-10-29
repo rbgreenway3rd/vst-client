@@ -5,7 +5,7 @@ import "./App.css"; // Optional for custom styles
 
 // Lazy load tab components to improve perf
 const SensorManagement = lazy(() => import("./components/SensorManagement"));
-const LiveStream = lazy(() => import("./components/LiveStream"));
+const LiveStream2 = lazy(() => import("./components/LiveStream2"));
 const ReplayStream = lazy(() => import("./components/ReplayStream"));
 const StreamRecorder = lazy(() => import("./components/StreamRecorder"));
 const FileManagement = lazy(() => import("./components/FileManagement"));
@@ -19,7 +19,8 @@ const theme = createTheme({
 
 function App() {
   const [tabValue, setTabValue] = useState(0);
-  const [vstBaseUrl, setVstBaseUrl] = useState("http://10.0.0.123:30000/api"); // Replace with your VST IP/port
+  const [vstBaseUrl, setVstBaseUrl] = useState("http://192.168.1.26:30000/api"); // Use the IP that works with VST's web UI
+  // const [vstBaseUrl, setVstBaseUrl] = useState("http://10.0.0.144:30000/api"); // Direct IP had network routing issues
   const [authToken, setAuthToken] = useState(""); // For Basic Auth: 'Basic ' + btoa('user:pass')
 
   const handleTabChange = (event, newValue) => {
@@ -28,7 +29,7 @@ function App() {
 
   const tabComponents = [
     { label: "Sensor Management", component: SensorManagement },
-    { label: "Live Stream", component: LiveStream },
+    { label: "Live Stream", component: LiveStream2 },
     { label: "Replay Stream", component: ReplayStream },
     { label: "Stream Recorder", component: StreamRecorder },
     { label: "File Management", component: FileManagement },

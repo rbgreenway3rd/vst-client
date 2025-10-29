@@ -15,6 +15,7 @@ import {
   addSensor as apiAddSensor,
   removeSensor as apiRemoveSensor,
   getSensorSettings,
+  getSensorQOS,
 } from "../utils/api";
 
 const SensorManagement = ({ baseUrl, authToken }) => {
@@ -28,10 +29,21 @@ const SensorManagement = ({ baseUrl, authToken }) => {
     setSettingsLoading(true);
     setSettingsData(null);
     console.log("Calling getSensorSettings with sensorId:", sensorId);
+
+    // First, show the full sensor object from the list
+    const sensor = sensors.find((s) => (s.sensorId || s.id) === sensorId);
+    console.log("Full sensor object from list:", sensor);
+
     try {
       const data = await getSensorSettings(baseUrl, authToken, sensorId);
       console.log("getSensorSettings result:", data, "for sensorId:", sensorId);
-      setSettingsData(data);
+      // If settings API returns null, show the sensor object instead
+      setSettingsData(
+        data || {
+          note: "Settings API returned null. Showing sensor info from list instead:",
+          ...sensor,
+        }
+      );
     } catch (error) {
       console.error(
         "getSensorSettings error:",
@@ -75,6 +87,55 @@ const SensorManagement = ({ baseUrl, authToken }) => {
       handleGetSensors();
     } catch (error) {
       console.error("Failed to remove sensor:", error);
+    }
+  };
+
+  const reAddSensor = async (sensor) => {
+    try {
+      // Log all available information about the sensor
+      console.log("All sensor info for re-add:", sensor);
+      // Fetch RTSP URL from getSensorQOS
+      let uri = sensor.uri || sensor.sensorIp || "";
+      let qosMatch = null;
+      try {
+        const qos = await getSensorQOS(baseUrl, authToken);
+        if (qos && qos.stats && Array.isArray(qos.stats)) {
+          // Try to match by name
+          qosMatch = qos.stats.find((stat) => stat.name === sensor.name);
+          if (qosMatch && qosMatch.rtspUrl) {
+            uri = qosMatch.rtspUrl;
+          }
+        }
+      } catch (qosErr) {
+        console.warn("QoS fetch failed:", qosErr);
+      }
+      if (!uri) {
+        alert("Cannot re-add sensor: missing RTSP URI or IP address.");
+        return;
+      }
+      // Prepare payload: include all original properties except id/state
+      const { state, id, sensorId, ...rest } = sensor;
+      const payload = {
+        ...rest,
+        name: sensor.name,
+        uri,
+      };
+      console.log(
+        "Re-adding sensor with payload:",
+        payload,
+        "QoS match:",
+        qosMatch
+      );
+      try {
+        const result = await apiAddSensor(baseUrl, authToken, payload);
+        console.log("addSensor result:", result);
+      } catch (addErr) {
+        console.error("addSensor error:", addErr, "Payload:", payload);
+        throw addErr;
+      }
+      handleGetSensors();
+    } catch (error) {
+      console.error("Failed to re-add sensor:", error);
     }
   };
 
@@ -127,13 +188,23 @@ const SensorManagement = ({ baseUrl, authToken }) => {
               <TableCell>{sensor.state}</TableCell>
               <TableCell>{sensor.remoteDeviceId}</TableCell>
               <TableCell>
-                <Button
-                  size="small"
-                  onClick={() => removeSensor(sensor.sensorId || sensor.id)}
-                  color="error"
-                >
-                  Remove
-                </Button>
+                {sensor.state === "removed" ? (
+                  <Button
+                    size="small"
+                    onClick={() => reAddSensor(sensor)}
+                    color="primary"
+                  >
+                    Re-add
+                  </Button>
+                ) : (
+                  <Button
+                    size="small"
+                    onClick={() => removeSensor(sensor.sensorId || sensor.id)}
+                    color="error"
+                  >
+                    Remove
+                  </Button>
+                )}
               </TableCell>
               <TableCell>
                 <Button
