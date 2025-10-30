@@ -5,7 +5,7 @@ import "./App.css"; // Optional for custom styles
 
 // Lazy load tab components to improve perf
 const SensorManagement = lazy(() => import("./components/SensorManagement"));
-const LiveStream2 = lazy(() => import("./components/LiveStream2"));
+const LiveStream = lazy(() => import("./components/LiveStream"));
 const ReplayStream = lazy(() => import("./components/ReplayStream"));
 const StreamRecorder = lazy(() => import("./components/StreamRecorder"));
 const FileManagement = lazy(() => import("./components/FileManagement"));
@@ -29,7 +29,7 @@ function App() {
 
   const tabComponents = [
     { label: "Sensor Management", component: SensorManagement },
-    { label: "Live Stream", component: LiveStream2 },
+    { label: "Live Stream", component: LiveStream },
     { label: "Replay Stream", component: ReplayStream },
     { label: "Stream Recorder", component: StreamRecorder },
     { label: "File Management", component: FileManagement },

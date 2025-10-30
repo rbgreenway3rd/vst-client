@@ -12,10 +12,25 @@ export const apiCall = async (baseUrl, endpoint, options = {}) => {
     const response = await axios({ url, headers, ...options });
     return response.data;
   } catch (error) {
+    // Log detailed error information
+    console.error("API Call Failed:", {
+      url,
+      method: options.method || "GET",
+      data: options.data,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      responseData: error.response?.data,
+    });
+
+    // Include response data in error message if available
+    const errorDetails = error.response?.data
+      ? ` - ${JSON.stringify(error.response.data)}`
+      : "";
+
     throw new Error(
       `API Error: ${error.response?.status || "Unknown"} - ${
         error.response?.statusText || error.message
-      }`
+      }${errorDetails}`
     );
   }
 };
@@ -88,9 +103,72 @@ export const addSensor = (baseUrl, authToken, sensorData) =>
     authToken,
   });
 
-// Remove a sensor
-export const removeSensor = (baseUrl, authToken, id) =>
-  apiCall(baseUrl, `/v1/sensor/${id}`, { method: "DELETE", authToken });
+// Remove a sensor (soft delete - marks as state: "removed")
+export const removeSensor = async (baseUrl, authToken, id) => {
+  console.log("removeSensor API call (soft delete):", {
+    endpoint: `/v1/sensor/${id}`,
+    method: "DELETE",
+    sensorId: id,
+    fullUrl: `${baseUrl}/v1/sensor/${id}`,
+  });
+
+  // Try multiple approaches in case VST implementation varies
+  try {
+    // Approach 1: Try DELETE endpoint (standard REST)
+    console.log(`🔄 METHOD 1: Trying DELETE /v1/sensor/${id}`);
+    const result = await apiCall(baseUrl, `/v1/sensor/${id}`, {
+      method: "DELETE",
+      authToken,
+      timeout: 10000, // 10 second timeout
+    });
+    console.log("✅ SUCCESS: DELETE method worked!");
+    return result;
+  } catch (deleteError) {
+    console.warn(
+      "❌ METHOD 1 FAILED: DELETE failed, trying alternative methods:",
+      deleteError.message
+    );
+
+    // Approach 2: Try setting state to "removed" via sensor info endpoint
+    try {
+      console.log(
+        `🔄 METHOD 2: Trying POST /v1/sensor/${id}/info with state='removed'`
+      );
+      const result = await apiCall(baseUrl, `/v1/sensor/${id}/info`, {
+        method: "POST",
+        data: { state: "removed" },
+        authToken,
+        timeout: 10000,
+      });
+      console.log("✅ SUCCESS: Setting state via /info worked!");
+      return result;
+    } catch (infoError) {
+      console.warn(
+        "❌ METHOD 2 FAILED: Setting state via /info failed:",
+        infoError.message
+      );
+
+      // Approach 3: Try POST to /v1/sensor/remove
+      try {
+        console.log("🔄 METHOD 3: Trying POST /v1/sensor/remove");
+        const result = await apiCall(baseUrl, `/v1/sensor/remove`, {
+          method: "POST",
+          data: { sensorId: id },
+          authToken,
+          timeout: 10000,
+        });
+        console.log("✅ SUCCESS: POST to /v1/sensor/remove worked!");
+        return result;
+      } catch (postError) {
+        console.error("❌ ALL METHODS FAILED: All 3 removal methods failed");
+        console.error("Method 1 error:", deleteError.message);
+        console.error("Method 2 error:", infoError.message);
+        console.error("Method 3 error:", postError.message);
+        throw deleteError; // Throw the original error
+      }
+    }
+  }
+};
 
 // Get sensor QoS stats
 export const getSensorQOS = (baseUrl, authToken) =>

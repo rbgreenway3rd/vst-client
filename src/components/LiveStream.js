@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import {
   Card,
   CardContent,
@@ -11,35 +11,461 @@ import {
   Box,
   CircularProgress,
 } from "@mui/material";
-import {
-  getSensors,
-  getSensorStatus,
-  startLiveStream,
-  stopLiveStream,
-  getLiveStreamConfiguration,
-  getLiveStreamVersion,
-} from "../utils/api";
+import { getSensors } from "../utils/api";
 
-const LiveStream = ({ baseUrl, authToken }) => {
+class VSTWebRTCClient {
+  constructor(vstServerUrl) {
+    this.vstUrl = vstServerUrl; // e.g., 'http://192.168.1.26:30000/api'
+    this.peerId = this.generateUUID();
+    this.mediaSessionId = null;
+    this.peerConnection = null;
+    this.iceCandidateInterval = null;
+    this.videoElement = null;
+  }
+
+  generateUUID() {
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+      /[xy]/g,
+      function (c) {
+        const r = (Math.random() * 16) | 0;
+        const v = c === "x" ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      }
+    );
+  }
+
+  async getIceServers() {
+    try {
+      const response = await fetch(
+        `${this.vstUrl}/v1/live/iceServers?peerId=${this.peerId}`
+      );
+      const data = await response.json();
+      console.log("ICE servers from VST:", data);
+      return data.iceServers || [];
+    } catch (error) {
+      console.warn("Could not fetch ICE servers from VST:", error);
+      // Fallback to public STUN servers
+      return [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ];
+    }
+  }
+
+  async startStream(streamId, videoElement) {
+    this.videoElement = videoElement;
+
+    try {
+      console.log("Starting VST WebRTC stream...");
+      console.log("Peer ID:", this.peerId);
+      console.log("Stream ID:", streamId);
+
+      // Get ICE servers (STUN/TURN)
+      const iceServers = await this.getIceServers();
+
+      // Create RTCPeerConnection
+      this.peerConnection = new RTCPeerConnection({
+        iceServers: iceServers,
+        bundlePolicy: "max-bundle",
+        rtcpMuxPolicy: "require",
+      });
+
+      // Handle incoming media track
+      this.peerConnection.ontrack = (event) => {
+        console.log("✅ Received remote track:", event.track.kind);
+        if (this.videoElement && event.streams[0]) {
+          this.videoElement.srcObject = event.streams[0];
+          console.log("✅ Video element source set");
+        }
+      };
+
+      // Handle ICE candidates (send to server)
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log("Local ICE candidate generated:", event.candidate.type);
+          this.sendIceCandidate(event.candidate);
+        }
+      };
+
+      // Handle ICE gathering state
+      this.peerConnection.onicegatheringstatechange = () => {
+        console.log(
+          "ICE gathering state:",
+          this.peerConnection.iceGatheringState
+        );
+      };
+
+      // Handle ICE connection state
+      this.peerConnection.oniceconnectionstatechange = () => {
+        console.log(
+          "ICE connection state:",
+          this.peerConnection.iceConnectionState
+        );
+        if (this.peerConnection.iceConnectionState === "connected") {
+          console.log("✅ ICE connection established!");
+        } else if (this.peerConnection.iceConnectionState === "failed") {
+          console.error("❌ ICE connection failed");
+        }
+      };
+
+      // Handle connection state changes
+      this.peerConnection.onconnectionstatechange = () => {
+        console.log("Connection state:", this.peerConnection.connectionState);
+        if (this.peerConnection.connectionState === "connected") {
+          console.log("✅ WebRTC connection established!");
+        }
+      };
+
+      // Add transceivers to receive video and audio
+      const videoTransceiver = this.peerConnection.addTransceiver("video", {
+        direction: "recvonly",
+      });
+      this.peerConnection.addTransceiver("audio", {
+        direction: "recvonly",
+      });
+
+      // Set H.264 preference
+      try {
+        const videoCodecs = RTCRtpReceiver.getCapabilities("video").codecs;
+        const h264Codecs = videoCodecs.filter(
+          (codec) => codec.mimeType.toLowerCase() === "video/h264"
+        );
+        if (h264Codecs.length > 0 && videoTransceiver.setCodecPreferences) {
+          videoTransceiver.setCodecPreferences([...h264Codecs, ...videoCodecs]);
+          console.log("Set H.264 as preferred codec");
+        }
+      } catch (err) {
+        console.warn("Could not set codec preferences:", err);
+      }
+
+      // Create offer
+      const offer = await this.peerConnection.createOffer();
+      await this.peerConnection.setLocalDescription(offer);
+      console.log("Created SDP offer");
+
+      // Send offer to VST
+      console.log("Sending offer to VST...");
+      const startResponse = await fetch(`${this.vstUrl}/v1/live/stream/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientIpAddr: window.location.hostname,
+          peerId: this.peerId,
+          streamId: streamId,
+          options: {
+            quality: "auto",
+            rtptransport: "udp",
+            timeout: 60,
+            overlay: {
+              objectId: [],
+              color: "red",
+              thickness: 6,
+              debug: false,
+              needBbox: false,
+              needTripwire: false,
+              needRoi: false,
+              opacity: 255,
+            },
+          },
+          sessionDescription: {
+            type: offer.type,
+            sdp: offer.sdp,
+          },
+        }),
+      });
+
+      if (!startResponse.ok) {
+        const errorText = await startResponse.text();
+        throw new Error(
+          `VST stream start failed: ${startResponse.status} - ${errorText}`
+        );
+      }
+
+      const startData = await startResponse.json();
+      console.log("VST response:", startData);
+
+      // Extract session description and mediaSessionId
+      let answerSdp, answerType;
+      if (startData.sessionDescription) {
+        // Response format: { sessionDescription: { type, sdp }, mediaSessionId }
+        answerType = startData.sessionDescription.type;
+        answerSdp = startData.sessionDescription.sdp;
+        this.mediaSessionId = startData.mediaSessionId;
+      } else if (startData.sdp) {
+        // Alternative format: { type, sdp, mediaSessionId }
+        answerType = startData.type;
+        answerSdp = startData.sdp;
+        this.mediaSessionId = startData.mediaSessionId;
+      } else {
+        throw new Error("No SDP answer in VST response");
+      }
+
+      console.log("Media Session ID:", this.mediaSessionId);
+
+      // Check ICE candidates in SDP
+      const candidateCount = (answerSdp.match(/a=candidate:/g) || []).length;
+      console.log(
+        `SDP answer contains ${candidateCount} ICE candidates`,
+        candidateCount === 0 ? "⚠️" : "✅"
+      );
+
+      // Set remote description (answer from server)
+      await this.peerConnection.setRemoteDescription(
+        new RTCSessionDescription({
+          type: answerType,
+          sdp: answerSdp,
+        })
+      );
+      console.log("Set remote SDP answer");
+
+      // Start polling for ICE candidates from server
+      this.startIceCandidatePolling();
+
+      console.log("✅ Stream started successfully");
+      return true;
+    } catch (error) {
+      console.error("❌ Error starting stream:", error);
+      this.cleanup();
+      throw error;
+    }
+  }
+
+  async sendIceCandidate(candidate) {
+    try {
+      const response = await fetch(`${this.vstUrl}/v1/live/iceCandidate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          peerId: this.peerId,
+          candidate: {
+            candidate: candidate.candidate,
+            sdpMid: candidate.sdpMid,
+            sdpMLineIndex: candidate.sdpMLineIndex,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn(
+          `Failed to send ICE candidate: ${response.status} - ${errorText}`
+        );
+      } else {
+        console.log("✅ Sent ICE candidate to VST");
+      }
+    } catch (error) {
+      console.warn("Error sending ICE candidate:", error);
+    }
+  }
+
+  startIceCandidatePolling() {
+    // Poll for ICE candidates from server every 500ms
+    console.log("Starting ICE candidate polling...");
+    this.iceCandidateInterval = setInterval(async () => {
+      try {
+        const response = await fetch(
+          `${this.vstUrl}/v1/live/iceCandidate?peerId=${this.peerId}`
+        );
+
+        if (!response.ok) {
+          // 501 means endpoint not implemented - stop polling
+          if (response.status === 501) {
+            console.log("ICE candidate polling not supported by VST (501)");
+            clearInterval(this.iceCandidateInterval);
+            this.iceCandidateInterval = null;
+            return;
+          }
+          return;
+        }
+
+        const candidates = await response.json();
+
+        if (Array.isArray(candidates) && candidates.length > 0) {
+          console.log(`Received ${candidates.length} remote ICE candidates`);
+          for (const candidate of candidates) {
+            if (candidate && candidate.candidate) {
+              await this.peerConnection.addIceCandidate(
+                new RTCIceCandidate(candidate)
+              );
+              console.log("Added remote ICE candidate");
+            }
+          }
+        }
+      } catch (error) {
+        console.warn("Error polling ICE candidates:", error);
+      }
+    }, 500);
+  }
+
+  async stopStream() {
+    console.log("Stopping stream...");
+    this.cleanup();
+
+    // Stop stream on server
+    if (this.mediaSessionId) {
+      try {
+        await fetch(`${this.vstUrl}/v1/live/stream/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stream_id: this.mediaSessionId,
+          }),
+        });
+        console.log("Stream stopped on server");
+      } catch (error) {
+        console.error("Error stopping stream on server:", error);
+      }
+    }
+  }
+
+  async getStreamStats() {
+    if (!this.mediaSessionId) return null;
+    try {
+      const response = await fetch(
+        `${this.vstUrl}/v1/live/stream/stats?stream_id=${this.mediaSessionId}`
+      );
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (error) {
+      console.warn("Error getting stream stats:", error);
+    }
+    return null;
+  }
+
+  async getStreamStatus() {
+    if (!this.mediaSessionId) return null;
+    try {
+      const response = await fetch(
+        `${this.vstUrl}/v1/live/stream/status?stream_id=${this.mediaSessionId}`
+      );
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (error) {
+      console.warn("Error getting stream status:", error);
+    }
+    return null;
+  }
+
+  async pauseStream() {
+    if (!this.mediaSessionId) return false;
+    try {
+      console.log("Pausing stream...");
+      const response = await fetch(`${this.vstUrl}/v1/live/stream/pause`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stream_id: this.mediaSessionId,
+        }),
+      });
+      if (response.ok) {
+        console.log("✅ Stream paused on server");
+        return true;
+      } else {
+        console.warn("Failed to pause stream:", response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error("Error pausing stream:", error);
+      return false;
+    }
+  }
+
+  async resumeStream() {
+    if (!this.mediaSessionId) return false;
+    try {
+      console.log("Resuming stream...");
+      const response = await fetch(`${this.vstUrl}/v1/live/stream/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stream_id: this.mediaSessionId,
+        }),
+      });
+      if (response.ok) {
+        console.log("✅ Stream resumed on server");
+        // Force video element to play
+        if (this.videoElement) {
+          this.videoElement
+            .play()
+            .catch((e) => console.warn("Video play error:", e));
+        }
+        return true;
+      } else {
+        console.warn("Failed to resume stream:", response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error("Error resuming stream:", error);
+      return false;
+    }
+  }
+
+  async captureSnapshot(streamId) {
+    try {
+      const response = await fetch(
+        `${this.vstUrl}/v1/live/stream/${streamId}/picture`,
+        {
+          method: "GET",
+        }
+      );
+      if (response.ok) {
+        const blob = await response.blob();
+        return URL.createObjectURL(blob);
+      }
+    } catch (error) {
+      console.error("Error capturing snapshot:", error);
+    }
+    return null;
+  }
+
+  cleanup() {
+    // Stop ICE candidate polling
+    if (this.iceCandidateInterval) {
+      clearInterval(this.iceCandidateInterval);
+      this.iceCandidateInterval = null;
+    }
+
+    // Close peer connection
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    // Clear video element
+    if (this.videoElement) {
+      this.videoElement.srcObject = null;
+    }
+
+    this.mediaSessionId = null;
+  }
+}
+
+// React Component
+const LiveStream2 = ({ baseUrl, authToken }) => {
   const videoRef = useRef(null);
-  const peerConnectionRef = useRef(null);
-  const streamIdRef = useRef(null); // This will store the mediaSessionId from VST
-  const peerIdRef = useRef(null); // Store the peerId for ICE candidate exchange
-  const iceCandidateCheckIntervalRef = useRef(null);
+  const clientRef = useRef(null);
+  const statsIntervalRef = useRef(null);
 
   const [selectedSensor, setSelectedSensor] = useState("");
   const [sensors, setSensors] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [error, setError] = useState("");
-  const [connectionState, setConnectionState] = useState("");
+  const [stats, setStats] = useState(null);
+  const [streamStatus, setStreamStatus] = useState(null);
 
   // Fetch sensors on mount
   useEffect(() => {
     const fetchSensors = async () => {
       try {
         const data = await getSensors(baseUrl, authToken);
-        setSensors(Array.isArray(data) ? data : data.sensors || []);
+        const allSensors = Array.isArray(data) ? data : data.sensors || [];
+        // Filter out removed sensors (only show active/offline sensors)
+        const activeSensors = allSensors.filter((s) => s.state !== "removed");
+        setSensors(activeSensors);
       } catch (error) {
         console.error("Failed to fetch sensors:", error);
         setError("Failed to fetch sensors: " + error.message);
@@ -48,354 +474,140 @@ const LiveStream = ({ baseUrl, authToken }) => {
     fetchSensors();
   }, [baseUrl, authToken]);
 
-  // Cleanup WebRTC connection on unmount or when sensor changes
-  const cleanupConnection = useCallback(async () => {
-    console.log("Cleaning up WebRTC connection...");
-
-    // Stop checking for ICE candidates
-    if (iceCandidateCheckIntervalRef.current) {
-      clearInterval(iceCandidateCheckIntervalRef.current);
-      iceCandidateCheckIntervalRef.current = null;
-    }
-
-    // Close peer connection
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-
-    // Stop stream on backend
-    if (streamIdRef.current) {
-      try {
-        await stopLiveStream(baseUrl, authToken, streamIdRef.current);
-        console.log("Stream stopped on backend");
-      } catch (err) {
-        console.warn("Failed to stop stream on backend:", err);
-      }
-      streamIdRef.current = null;
-    }
-
-    // Clear video element
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
-    setIsConnected(false);
-    setConnectionState("");
-  }, [baseUrl, authToken]);
-
-  // Start WebRTC connection
-  const startWebRTCStream = useCallback(async () => {
-    setError("");
-    setIsConnecting(true);
-
-    // Queue to store ICE candidates until stream is ready
-    const pendingIceCandidates = [];
-    let streamReady = false;
-
-    try {
-      // 1. Check sensor status first
-      console.log("Checking sensor status for:", selectedSensor);
-      try {
-        const sensorStatus = await getSensorStatus(
-          baseUrl,
-          authToken,
-          selectedSensor
-        );
-        console.log("Sensor status:", sensorStatus);
-        if (sensorStatus && sensorStatus.state !== "online") {
-          throw new Error(
-            `Sensor is not online. Current state: ${
-              sensorStatus.state || "unknown"
-            }. The sensor must be online and streaming for WebRTC to work.`
-          );
-        }
-      } catch (statusErr) {
-        console.warn("Could not verify sensor status:", statusErr);
-        // Continue anyway, as the API might not support this endpoint
-      }
-
-      // 2. Generate a unique peer ID (like VST's UI)
-      const peerId = `${crypto.randomUUID()}`;
-      peerIdRef.current = peerId; // Store for ICE candidate exchange
-      console.log("Starting stream for sensor:", selectedSensor);
-      console.log("Generated peer ID:", peerId);
-
-      // 3. Create RTCPeerConnection
-      const config = {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
-        bundlePolicy: "max-bundle",
-        rtcpMuxPolicy: "require",
-      };
-
-      const pc = new RTCPeerConnection(config);
-      peerConnectionRef.current = pc;
-
-      // 3. Set up event handlers
-      pc.onicecandidate = async (event) => {
-        if (event.candidate) {
-          console.log("Local ICE candidate:", event.candidate);
-
-          const candidateData = {
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex,
-          };
-
-          // Send ICE candidates to VST after stream is established
-          if (!streamReady) {
-            console.log("Queueing ICE candidate until stream is ready");
-            pendingIceCandidates.push(candidateData);
-          }
-          // Skip sending to VST - the /v1/live/iceCandidate endpoint returns 501
-          // VST's SDP should contain all ICE candidates (but currently contains 0)
-        }
-      };
-
-      pc.ontrack = (event) => {
-        console.log("Received remote track:", event.track.kind);
-        if (videoRef.current && event.streams[0]) {
-          videoRef.current.srcObject = event.streams[0];
-          setIsConnected(true);
-          setIsConnecting(false);
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        console.log("Connection state:", pc.connectionState);
-        setConnectionState(pc.connectionState);
-        if (
-          pc.connectionState === "failed" ||
-          pc.connectionState === "disconnected"
-        ) {
-          setError("WebRTC connection failed or disconnected");
-          setIsConnected(false);
-        }
-        if (pc.connectionState === "connected") {
-          console.log("✅ WebRTC connection established!");
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        console.log("ICE connection state:", pc.iceConnectionState);
-        if (pc.iceConnectionState === "failed") {
-          console.error("❌ ICE connection failed - check network/firewall");
-          setError(
-            "ICE connection failed. Check that:\n" +
-              "1. VST server can reach your browser (firewall/NAT)\n" +
-              "2. STUN servers are accessible\n" +
-              "3. UDP ports are not blocked"
-          );
-        }
-        if (pc.iceConnectionState === "connected") {
-          console.log("✅ ICE connection established!");
-        }
-      };
-
-      pc.onicegatheringstatechange = () => {
-        console.log("ICE gathering state:", pc.iceGatheringState);
-        if (pc.iceGatheringState === "complete") {
-          console.log("✅ ICE candidate gathering complete");
-        }
-      };
-
-      // 4. Add transceivers for receiving video and audio with H.264 preference
-      const videoTransceiver = pc.addTransceiver("video", {
-        direction: "recvonly",
-      });
-      pc.addTransceiver("audio", {
-        direction: "recvonly",
-      });
-
-      // Try to set H.264 as preferred codec (VST config shows h264 support)
-      try {
-        const videoCodecs = RTCRtpReceiver.getCapabilities("video").codecs;
-        const h264Codecs = videoCodecs.filter(
-          (codec) => codec.mimeType.toLowerCase() === "video/h264"
-        );
-        if (h264Codecs.length > 0 && videoTransceiver.setCodecPreferences) {
-          // Prefer H.264, then allow others
-          videoTransceiver.setCodecPreferences([...h264Codecs, ...videoCodecs]);
-          console.log("Set H.264 as preferred video codec");
-        }
-      } catch (err) {
-        console.warn("Could not set codec preferences:", err);
-      }
-
-      // 5. Create SDP offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      console.log("Created SDP offer:", offer.sdp);
-
-      // 6. Send offer to VST backend and get answer (using VST's official format)
-      console.log("Sending SDP offer to backend...");
-      const response = await startLiveStream(
-        baseUrl,
-        authToken,
-        peerId, // Use peerId instead of streamId
-        offer.sdp,
-        selectedSensor // This is the streamId in VST's format
-      );
-
-      console.log("Backend response:", response);
-
-      if (!response || !response.sdp) {
-        throw new Error("No SDP answer received from backend");
-      }
-
-      // Check if SDP contains ICE candidates
-      const iceCandidateCount = (response.sdp.match(/a=candidate:/g) || [])
-        .length;
-      console.log(
-        `SDP answer contains ${iceCandidateCount} ICE candidates`,
-        iceCandidateCount === 0 ? "⚠️ WARNING: No ICE candidates in SDP!" : "✅"
-      );
-
-      // Store the mediaSessionId for ICE candidate exchange and cleanup
-      if (response.mediaSessionId) {
-        streamIdRef.current = response.mediaSessionId;
-        console.log("Media Session ID:", response.mediaSessionId);
-      } else {
-        console.warn(
-          "No mediaSessionId in response - ICE candidates may not work"
-        );
-      }
-
-      // 7. Set remote description (SDP answer) - VST returns flat object with sdp/type/mediaSessionId
-      const answer = {
-        type: response.type || "answer",
-        sdp: response.sdp,
-      };
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      console.log("Set remote SDP answer");
-
-      // 8. Mark stream as ready and send pending ICE candidates
-      streamReady = true;
-      console.log("WebRTC negotiation complete - waiting for ICE connection");
-
-      // Send any pending ICE candidates to VST
-      // NOTE: VST returns 501 "Failed to add Ice Candidate" - the endpoint exists but doesn't work
-      // This is likely because VST's SDP contains 0 ICE candidates (VST network config issue)
-      // Skip sending candidates to avoid errors, but log what we have
-      if (pendingIceCandidates.length > 0) {
-        console.log(
-          `⚠️ Generated ${pendingIceCandidates.length} local ICE candidates, but NOT sending to VST (endpoint returns 501)`
-        );
-        console.log("Local ICE candidates:", pendingIceCandidates);
-        console.log(
-          "VST SDP contains 0 remote ICE candidates - ICE connection will likely fail"
-        );
-        console.log(
-          "Possible causes:\n" +
-            "1. VST server behind NAT without proper network configuration\n" +
-            "2. VST webrtcBindIp not configured correctly\n" +
-            "3. VST can't detect its own external IP address\n" +
-            "4. Firewall blocking VST from generating STUN candidates"
-        );
-      }
-
-      console.log(
-        "ICE connection process started - check ICE state logs above"
-      );
-
-      setIsConnecting(false);
-    } catch (err) {
-      console.error("WebRTC connection error:", err);
-      let errorMessage = "Failed to start WebRTC stream:\n\n";
-
-      if (err.message.includes("ERR_EMPTY_RESPONSE")) {
-        errorMessage +=
-          "❌ ERR_EMPTY_RESPONSE - The VST Live Stream microservice crashed when processing the request.\n\n" +
-          "Common causes:\n" +
-          "• **Sensor is not streaming** - VST cannot relay a stream that doesn't exist\n" +
-          "• Sensor is offline or disconnected\n" +
-          "• RTSP URL for the sensor is invalid or not reachable by VST\n" +
-          "• VST cannot connect to the sensor's RTSP stream\n\n" +
-          "Solutions:\n" +
-          "1. Verify sensor is online in the Sensor Management tab\n" +
-          "2. Check sensor RTSP URL is correct and accessible\n" +
-          "3. Test RTSP stream directly: VLC → Open Network Stream → rtsp://sensor-ip/stream\n" +
-          "4. Check VST logs: docker logs <vst-container> | tail -50\n" +
-          "5. Verify firewall allows VST (10.0.0.144) to reach sensor RTSP port\n" +
-          "6. Try with a different sensor that you know is streaming";
-      } else if (err.message.includes("Sensor is not online")) {
-        errorMessage +=
-          "❌ ERR_CONNECTION_RESET - VST backend forcibly closed the connection.\n\n" +
-          "This typically indicates the VST Live Stream service crashed.\n" +
-          "Check VST service logs for crash details.";
-      } else if (err.message.includes("400")) {
-        errorMessage +=
-          "❌ 400 Bad Request - The request format was rejected.\n\n" +
-          "Possible issues:\n" +
-          "• Invalid sensor_id (sensor might not exist or be offline)\n" +
-          "• Incorrect payload field names (streamId vs stream_id)\n" +
-          "• Stream ID already in use\n\n" +
-          "Try: Select a different sensor or refresh the page.";
-      } else if (err.message.includes("No SDP answer")) {
-        errorMessage +=
-          "❌ No SDP answer received from VST.\n\n" +
-          "WebRTC negotiation failed. The VST server may not support WebRTC,\n" +
-          "or the Live Stream microservice is not properly configured.";
-      } else {
-        errorMessage += err.message;
-      }
-
-      setError(errorMessage);
-      setIsConnecting(false);
-      await cleanupConnection();
-    }
-  }, [selectedSensor, baseUrl, authToken, cleanupConnection]);
-
-  // Handle sensor selection change
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      cleanupConnection();
+      if (clientRef.current) {
+        clientRef.current.stopStream();
+      }
     };
-  }, [cleanupConnection]);
+  }, []);
 
-  const handleSensorChange = async (e) => {
-    await cleanupConnection();
-    setSelectedSensor(e.target.value);
-  };
-
-  const handleConnect = () => {
+  const handleConnect = async () => {
     if (!selectedSensor) {
       setError("Please select a sensor first");
       return;
     }
-    startWebRTCStream();
-  };
 
-  const handleDisconnect = () => {
-    cleanupConnection();
-  };
+    setError("");
+    setIsConnecting(true);
 
-  const handleCheckConfig = async () => {
     try {
-      console.log("Checking VST Live Stream Configuration...");
-      const config = await getLiveStreamConfiguration(baseUrl, authToken);
-      console.log("VST Live Stream Configuration:", config);
+      // Force cleanup any existing client first
+      if (clientRef.current) {
+        console.log("Cleaning up previous connection...");
+        await clientRef.current.stopStream();
+        clientRef.current = null;
+      }
 
-      const version = await getLiveStreamVersion(baseUrl, authToken);
-      console.log("VST Live Stream Version:", version);
+      // Create new client instance
+      clientRef.current = new VSTWebRTCClient(baseUrl);
 
-      alert(
-        `VST Config:\n${JSON.stringify(
-          config,
-          null,
-          2
-        )}\n\nVersion:\n${JSON.stringify(version, null, 2)}`
-      );
+      // Start stream
+      await clientRef.current.startStream(selectedSensor, videoRef.current);
+
+      setIsConnected(true);
+      setIsConnecting(false);
+
+      // Start polling for stats and status
+      statsIntervalRef.current = setInterval(async () => {
+        try {
+          const streamStats = await clientRef.current.getStreamStats();
+          const status = await clientRef.current.getStreamStatus();
+          setStats(streamStats);
+          setStreamStatus(status);
+        } catch (err) {
+          console.error("Failed to fetch stats/status:", err);
+        }
+      }, 1000);
     } catch (err) {
-      console.error("Failed to get VST configuration:", err);
+      console.error("Connection failed:", err);
+
+      // Provide helpful error message
+      let errorMsg = "Failed to start stream: " + err.message;
+      if (err.message.includes("connections limit reached")) {
+        errorMsg +=
+          "\n\n💡 VST can only handle 1 connection at a time.\n" +
+          "• Close VST's official web UI if open\n" +
+          "• Close other browser tabs with this client\n" +
+          "• Or increase max_webrtc_out_connections in vst_config.json";
+      }
+
+      setError(errorMsg);
+      setIsConnecting(false);
+      setIsConnected(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (statsIntervalRef.current) {
+      clearInterval(statsIntervalRef.current);
+      statsIntervalRef.current = null;
+    }
+    if (clientRef.current) {
+      await clientRef.current.stopStream();
+      clientRef.current = null;
+    }
+    setIsConnected(false);
+    setIsPaused(false);
+    setStats(null);
+    setStreamStatus(null);
+  };
+
+  const handlePauseResume = async () => {
+    if (!clientRef.current) return;
+
+    try {
+      if (isPaused) {
+        // Resume
+        const success = await clientRef.current.resumeStream();
+        if (success) {
+          setIsPaused(false);
+        } else {
+          setError("Failed to resume stream");
+        }
+      } else {
+        // Pause
+        const success = await clientRef.current.pauseStream();
+        if (success) {
+          setIsPaused(true);
+        } else {
+          setError("Failed to pause stream");
+        }
+      }
+    } catch (err) {
+      console.error("Error toggling pause/resume:", err);
       setError(
-        "Failed to get VST configuration: " +
-          err.message +
-          "\n\nThis might indicate WebRTC is not enabled or the Live Stream service is not running."
+        `Failed to ${isPaused ? "resume" : "pause"} stream: ${err.message}`
       );
+    }
+  };
+
+  const handleSensorChange = async (e) => {
+    if (isConnected) {
+      await handleDisconnect();
+    }
+    setSelectedSensor(e.target.value);
+  };
+
+  const handleTakeSnapshot = async () => {
+    if (!clientRef.current) return;
+
+    try {
+      const blob = await clientRef.current.takeSnapshot();
+      const url = URL.createObjectURL(blob);
+
+      // Create a download link
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `snapshot-${selectedSensor}-${Date.now()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Failed to take snapshot:", err);
+      setError("Failed to capture snapshot: " + err.message);
     }
   };
 
@@ -403,7 +615,7 @@ const LiveStream = ({ baseUrl, authToken }) => {
     <Card>
       <CardContent>
         <Typography variant="h6" gutterBottom>
-          Live Stream via WebRTC
+          Live Stream via WebRTC (VST Protocol)
         </Typography>
 
         <FormControl fullWidth sx={{ mb: 2 }}>
@@ -413,45 +625,61 @@ const LiveStream = ({ baseUrl, authToken }) => {
             onChange={handleSensorChange}
             disabled={isConnecting || isConnected}
           >
-            {sensors.map((s) => (
-              <MenuItem key={s.sensorId || s.id} value={s.sensorId || s.id}>
-                {s.name} ({s.sensorId || s.id})
-              </MenuItem>
-            ))}
+            {sensors.map((s) => {
+              const isOffline = s.state === "offline" || s.state === "OFFLINE";
+              const displayName = isOffline
+                ? `${s.name} (${s.sensorId || s.id}) - OFFLINE`
+                : `${s.name} (${s.sensorId || s.id})`;
+
+              return (
+                <MenuItem
+                  key={s.sensorId || s.id}
+                  value={s.sensorId || s.id}
+                  sx={
+                    isOffline
+                      ? { color: "text.secondary", fontStyle: "italic" }
+                      : {}
+                  }
+                >
+                  {displayName}
+                </MenuItem>
+              );
+            })}
           </Select>
         </FormControl>
 
         <Box sx={{ mb: 2, display: "flex", gap: 1, alignItems: "center" }}>
           {!isConnected ? (
+            <Button
+              variant="contained"
+              onClick={handleConnect}
+              disabled={!selectedSensor || isConnecting}
+            >
+              {isConnecting ? "Connecting..." : "Connect"}
+            </Button>
+          ) : (
             <>
               <Button
-                variant="contained"
-                onClick={handleConnect}
-                disabled={!selectedSensor || isConnecting}
+                variant="outlined"
+                color="error"
+                onClick={handleDisconnect}
               >
-                {isConnecting ? "Connecting..." : "Connect"}
+                Disconnect
               </Button>
               <Button
                 variant="outlined"
-                onClick={handleCheckConfig}
-                disabled={isConnecting}
+                color={isPaused ? "success" : "warning"}
+                onClick={handlePauseResume}
               >
-                Check VST Config
+                {isPaused ? "▶ Resume" : "⏸ Pause"}
+              </Button>
+              <Button variant="outlined" onClick={handleTakeSnapshot}>
+                📷 Snapshot
               </Button>
             </>
-          ) : (
-            <Button variant="outlined" color="error" onClick={handleDisconnect}>
-              Disconnect
-            </Button>
           )}
 
           {isConnecting && <CircularProgress size={24} />}
-
-          {connectionState && (
-            <Typography variant="body2" color="textSecondary">
-              State: {connectionState}
-            </Typography>
-          )}
         </Box>
 
         {error && (
@@ -477,12 +705,68 @@ const LiveStream = ({ baseUrl, authToken }) => {
           </Box>
         )}
 
+        {isConnected && (stats || streamStatus) && (
+          <Box
+            sx={{
+              mb: 2,
+              p: 2,
+              backgroundColor: "#e3f2fd",
+              borderRadius: 1,
+              border: "1px solid #2196f3",
+            }}
+          >
+            <Typography variant="subtitle2" sx={{ fontWeight: "bold", mb: 1 }}>
+              Stream Info
+            </Typography>
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+              {streamStatus && (
+                <Typography variant="body2">
+                  <strong>Status:</strong>{" "}
+                  <span
+                    style={{
+                      color:
+                        streamStatus.status === "PLAYING"
+                          ? "green"
+                          : streamStatus.status === "PAUSED"
+                          ? "orange"
+                          : "red",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {streamStatus.status}
+                  </span>
+                </Typography>
+              )}
+              {stats && (
+                <>
+                  <Typography variant="body2">
+                    <strong>FPS:</strong> {stats.framerate?.toFixed(1) || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>Bitrate:</strong>{" "}
+                    {stats.bitrate
+                      ? `${(stats.bitrate / 1000000).toFixed(2)} Mbps`
+                      : "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>Encoded Frames:</strong>{" "}
+                    {stats.totalEncodedFrames || 0}
+                  </Typography>
+                  <Typography variant="body2">
+                    <strong>Decoded Frames:</strong>{" "}
+                    {stats.totalDecodedFrames || 0}
+                  </Typography>
+                </>
+              )}
+            </Box>
+          </Box>
+        )}
+
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          controls
           width="100%"
           style={{
             maxHeight: 500,
@@ -512,4 +796,4 @@ const LiveStream = ({ baseUrl, authToken }) => {
   );
 };
 
-export default LiveStream;
+export default LiveStream2;
