@@ -15,7 +15,20 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Tabs,
+  Tab,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  List,
+  ListItem,
+  ListItemText,
+  IconButton,
+  Divider,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import EditIcon from "@mui/icons-material/Edit";
+import DeleteIcon from "@mui/icons-material/Delete";
 import { getSensors } from "../../services/vst/api_vst";
 import {
   createTripwireConfig,
@@ -35,6 +48,9 @@ const TripwireConfig = ({
 }) => {
   const canvasRef = useRef(null);
   const imageRef = useRef(null);
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState(0);
 
   const [sensors, setSensors] = useState([]);
   const [selectedSensor, setSelectedSensor] = useState("");
@@ -598,96 +614,169 @@ const TripwireConfig = ({
     }
   };
 
-  return (
-    <Card>
-      <CardContent>
-        <Typography variant="h6" gutterBottom>
-          {title}
-        </Typography>
+  // Helper function to delete a zone
+  const handleDeleteZone = (id, type) => {
+    if (type === "tripwire") {
+      setTripwires(tripwires.filter((t) => t.id !== id));
+      setSuccess(`Tripwire "${id}" deleted`);
+    } else {
+      setRois(rois.filter((r) => r.id !== id));
+      setSuccess(`ROI "${id}" deleted`);
+    }
+  };
 
-        <FormControl fullWidth sx={{ mb: 2 }}>
-          <InputLabel>Select Camera</InputLabel>
-          <Select
-            value={selectedSensor}
-            onChange={(e) => setSelectedSensor(e.target.value)}
-            disabled={isDrawing}
-          >
-            {sensors.map((s) => {
-              const isOffline = s.state === "offline" || s.state === "OFFLINE";
-              const sensorId = s.sensorId || s.id;
-              return (
-                <MenuItem key={sensorId} value={sensorId} disabled={isOffline}>
-                  {s.name} ({sensorId}) {isOffline && "- OFFLINE"}
-                </MenuItem>
-              );
-            })}
-          </Select>
-        </FormControl>
+  // Render Zone Setup Tab
+  const renderZoneSetupTab = () => (
+    <>
+      {/* Camera Selection */}
+      <FormControl fullWidth sx={{ mb: 2 }}>
+        <InputLabel>Select Camera</InputLabel>
+        <Select
+          value={selectedSensor}
+          onChange={(e) => setSelectedSensor(e.target.value)}
+          disabled={isDrawing}
+        >
+          {sensors.map((s) => {
+            const isOffline = s.state === "offline" || s.state === "OFFLINE";
+            const sensorId = s.sensorId || s.id;
+            return (
+              <MenuItem key={sensorId} value={sensorId} disabled={isOffline}>
+                {s.name} ({sensorId}) {isOffline && "- OFFLINE"}
+              </MenuItem>
+            );
+          })}
+        </Select>
+      </FormControl>
 
-        <Box sx={{ mb: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
-          <Button
-            variant="contained"
-            onClick={handleCaptureSnapshot}
-            disabled={!selectedSensor || isLoadingSnapshot || isDrawing}
-          >
-            {isLoadingSnapshot ? "Capturing..." : "📷 Capture Snapshot"}
-          </Button>
+      {/* Success/Error Messages */}
+      {success && (
+        <Box
+          sx={{
+            mb: 2,
+            p: 2,
+            backgroundColor: "#e8f5e9",
+            borderRadius: 1,
+            border: "1px solid #4caf50",
+          }}
+        >
+          <Typography color="success.main">{success}</Typography>
+        </Box>
+      )}
 
-          {snapshotUrl && !isDrawing && (
-            <>
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={() => handleStartDrawing("tripwire")}
-              >
-                ✏️ Draw Tripwire
-              </Button>
+      {error && (
+        <Box
+          sx={{
+            mb: 2,
+            p: 2,
+            backgroundColor: "#ffebee",
+            borderRadius: 1,
+            border: "1px solid #ef5350",
+          }}
+        >
+          <Typography color="error" sx={{ whiteSpace: "pre-wrap" }}>
+            {error}
+          </Typography>
+        </Box>
+      )}
 
-              <Button
-                variant="contained"
-                color="secondary"
-                onClick={() => handleStartDrawing("roi")}
-              >
-                🔷 Draw ROI
-              </Button>
-            </>
-          )}
+      <Box sx={{ mb: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
+        <Button
+          variant="contained"
+          onClick={handleCaptureSnapshot}
+          disabled={!selectedSensor || isLoadingSnapshot || isDrawing}
+        >
+          {isLoadingSnapshot ? "Capturing..." : "📷 Capture Snapshot"}
+        </Button>
 
-          {isDrawing && (
-            <>
-              <Button
-                variant="contained"
-                color="success"
-                onClick={handleFinishDrawing}
-                disabled={
-                  !currentItem ||
-                  currentItem.length < (drawingMode === "tripwire" ? 2 : 3)
-                }
-              >
-                ✓ Finish {drawingMode === "tripwire" ? "Tripwire" : "ROI"}
-              </Button>
-              <Button
-                variant="outlined"
-                color="warning"
-                onClick={handleCancelDrawing}
-              >
-                ✗ Cancel
-              </Button>
-            </>
-          )}
+        {snapshotUrl && !isDrawing && (
+          <>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={() => handleStartDrawing("tripwire")}
+            >
+              ✏️ Draw Tripwire
+            </Button>
 
-          {snapshotUrl &&
-            !isDrawing &&
-            (tripwires.length > 0 || rois.length > 0) && (
-              <>
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={() => handleStartDrawing("roi")}
+            >
+              🔷 Draw ROI
+            </Button>
+          </>
+        )}
+        {/* Configured Zones Section */}
+        {(tripwires.length > 0 || rois.length > 0) && (
+          <Accordion defaultExpanded sx={{ mt: 2 }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography variant="h6">
+                Configured Zones ({tripwires.length} tripwire
+                {tripwires.length !== 1 ? "s" : ""}, {rois.length} ROI
+                {rois.length !== 1 ? "s" : ""})
+              </Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <List>
+                {tripwires.map((tripwire) => (
+                  <React.Fragment key={tripwire.id}>
+                    <ListItem
+                      secondaryAction={
+                        <Box>
+                          <IconButton
+                            edge="end"
+                            aria-label="delete"
+                            onClick={() =>
+                              handleDeleteZone(tripwire.id, "tripwire")
+                            }
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </Box>
+                      }
+                    >
+                      <ListItemText
+                        primary={`🟢 ${tripwire.name}`}
+                        secondary={`ID: ${tripwire.id} | Type: Tripwire | Entry: ${tripwire.direction.entry.name} → Exit: ${tripwire.direction.exit.name}`}
+                      />
+                    </ListItem>
+                    <Divider />
+                  </React.Fragment>
+                ))}
+                {rois.map((roi) => (
+                  <React.Fragment key={roi.id}>
+                    <ListItem
+                      secondaryAction={
+                        <Box>
+                          <IconButton
+                            edge="end"
+                            aria-label="delete"
+                            onClick={() => handleDeleteZone(roi.id, "roi")}
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </Box>
+                      }
+                    >
+                      <ListItemText
+                        primary={`🔷 ${roi.name}`}
+                        secondary={`ID: ${roi.id} | Type: ROI`}
+                      />
+                    </ListItem>
+                    <Divider />
+                  </React.Fragment>
+                ))}
+              </List>
+              <Box sx={{ mt: 2, display: "flex", justifyContent: "flex-end" }}>
                 <Button
                   variant="outlined"
                   color="error"
                   onClick={handleClearAll}
+                  sx={{ mr: 1 }}
                 >
                   🗑️ Clear All
                 </Button>
-
                 <Button
                   variant="contained"
                   color="success"
@@ -695,125 +784,237 @@ const TripwireConfig = ({
                 >
                   📤 Submit to EMDX
                 </Button>
-              </>
-            )}
-
-          {isLoadingSnapshot && <CircularProgress size={24} />}
-        </Box>
-
-        {success && (
-          <Box
-            sx={{
-              mb: 2,
-              p: 2,
-              backgroundColor: "#e8f5e9",
-              borderRadius: 1,
-              border: "1px solid #4caf50",
-            }}
-          >
-            <Typography color="success.main">{success}</Typography>
-          </Box>
+              </Box>
+            </AccordionDetails>
+          </Accordion>
+        )}
+        {isDrawing && (
+          <>
+            <Button
+              variant="contained"
+              color="success"
+              onClick={handleFinishDrawing}
+              disabled={
+                !currentItem ||
+                currentItem.length < (drawingMode === "tripwire" ? 2 : 3)
+              }
+            >
+              ✓ Finish {drawingMode === "tripwire" ? "Tripwire" : "ROI"}
+            </Button>
+            <Button
+              variant="outlined"
+              color="warning"
+              onClick={handleCancelDrawing}
+            >
+              ✗ Cancel
+            </Button>
+          </>
         )}
 
-        {error && (
+        {isLoadingSnapshot && <CircularProgress size={24} />}
+      </Box>
+
+      {snapshotUrl && (
+        <Box sx={{ position: "relative", mb: 2 }}>
           <Box
-            sx={{
-              mb: 2,
-              p: 2,
-              backgroundColor: "#ffebee",
-              borderRadius: 1,
-              border: "1px solid #ef5350",
-            }}
+            sx={{ mb: 1, p: 1, backgroundColor: "#e3f2fd", borderRadius: 1 }}
           >
-            <Typography color="error" sx={{ whiteSpace: "pre-wrap" }}>
-              {error}
+            <Typography
+              variant="body2"
+              sx={{ fontWeight: "bold", whiteSpace: "pre-line" }}
+            >
+              {isDrawing
+                ? drawingMode === "tripwire"
+                  ? `🖱️ Left click on the image to add points to the tripwire polygon (min 2 points)\n🖱️ Right click on the image to finish drawing tripwire\n⌨️ Press Backspace to undo last point`
+                  : `🖱️ Left click on the image to add points to the ROI polygon (min 3 points)\n🖱️ Right click on the image to finish drawing ROI`
+                : isSettingDirection
+                ? "🎯 Click TWO points: 1️⃣ Entry side (red), then 2️⃣ Exit side (blue)"
+                : `📊 Camera: ${selectedSensor} | Image: ${imageDimensions.width}x${imageDimensions.height} | Tripwires: ${tripwires.length} | ROIs: ${rois.length}`}
             </Typography>
           </Box>
-        )}
 
-        {snapshotUrl && (
-          <Box sx={{ position: "relative", mb: 2 }}>
-            <Box
-              sx={{ mb: 1, p: 1, backgroundColor: "#e3f2fd", borderRadius: 1 }}
-            >
-              <Typography
-                variant="body2"
-                sx={{ fontWeight: "bold", whiteSpace: "pre-line" }}
-              >
-                {isDrawing
-                  ? drawingMode === "tripwire"
-                    ? `🖱️ Left click on the image to add points to the tripwire polygon (min 2 points)\n🖱️ Right click on the image to finish drawing tripwire\n⌨️ Press Backspace to undo last point`
-                    : `🖱️ Left click on the image to add points to the ROI polygon (min 3 points)\n🖱️ Right click on the image to finish drawing ROI`
-                  : isSettingDirection
-                  ? "🎯 Click TWO points: 1️⃣ Entry side (red), then 2️⃣ Exit side (blue)"
-                  : `📊 Camera: ${selectedSensor} | Image: ${imageDimensions.width}x${imageDimensions.height} | Tripwires: ${tripwires.length} | ROIs: ${rois.length}`}
-              </Typography>
-            </Box>
-
-            <Box
-              sx={{
-                position: "relative",
-                width: "100%",
-                maxWidth: "1200px",
-                height: "675px", // 16:9 aspect ratio
-                backgroundColor: "#000",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                margin: "0 auto",
-              }}
-            >
-              <img
-                ref={imageRef}
-                src={snapshotUrl}
-                alt="Camera snapshot"
-                style={{
-                  maxWidth: "100%",
-                  maxHeight: "100%",
-                  width: "auto",
-                  height: "auto",
-                  display: "block",
-                  border: "2px solid #ccc",
-                  objectFit: "contain",
-                }}
-                onLoad={handleImageLoad}
-              />
-              <canvas
-                ref={canvasRef}
-                onClick={handleCanvasClick}
-                onContextMenu={handleCanvasRightClick}
-                onMouseMove={handleCanvasMouseMove}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: "100%",
-                  cursor:
-                    isDrawing || isSettingDirection ? "crosshair" : "default",
-                }}
-              />
-            </Box>
-          </Box>
-        )}
-
-        {!snapshotUrl && !isLoadingSnapshot && (
           <Box
             sx={{
+              position: "relative",
               width: "100%",
-              height: 300,
-              backgroundColor: "#f5f5f5",
+              maxWidth: "1200px",
+              height: "675px",
+              backgroundColor: "#000",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: 1,
+              margin: "0 auto",
             }}
           >
-            <Typography color="textSecondary">
-              Select a camera and capture a snapshot to begin
-            </Typography>
+            <img
+              ref={imageRef}
+              src={snapshotUrl}
+              alt="Camera snapshot"
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                width: "auto",
+                height: "auto",
+                display: "block",
+                border: "2px solid #ccc",
+                objectFit: "contain",
+              }}
+              onLoad={handleImageLoad}
+            />
+            <canvas
+              ref={canvasRef}
+              onClick={handleCanvasClick}
+              onContextMenu={handleCanvasRightClick}
+              onMouseMove={handleCanvasMouseMove}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                cursor:
+                  isDrawing || isSettingDirection ? "crosshair" : "default",
+              }}
+            />
           </Box>
-        )}
+        </Box>
+      )}
+
+      {!snapshotUrl && !isLoadingSnapshot && (
+        <Box
+          sx={{
+            width: "100%",
+            height: 300,
+            backgroundColor: "#f5f5f5",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 1,
+          }}
+        >
+          <Typography color="textSecondary">
+            Select a camera and capture a snapshot to begin
+          </Typography>
+        </Box>
+      )}
+    </>
+  );
+
+  // Render Analytics Tab
+  const renderAnalyticsTab = () => (
+    <Box sx={{ p: 2 }}>
+      <Typography variant="h6" gutterBottom>
+        📊 Analytics Dashboard
+      </Typography>
+      <Typography color="textSecondary" sx={{ mb: 2 }}>
+        View real-time and historical analytics for your configured zones
+      </Typography>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography>Time Range Selection</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography color="textSecondary">
+            Analytics metrics retrieval coming soon...
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion sx={{ mt: 1 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography>Tripwire Crossing Counts</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography color="textSecondary">
+            Histogram and total counts will be displayed here
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion sx={{ mt: 1 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography>ROI Occupancy Metrics</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography color="textSecondary">
+            Occupancy trends and statistics will be displayed here
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+    </Box>
+  );
+
+  // Render Alerts Tab
+  const renderAlertsTab = () => (
+    <Box sx={{ p: 2 }}>
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          mb: 2,
+        }}
+      >
+        <Typography variant="h6">🔔 Alert Rules & History</Typography>
+        <Button variant="contained" color="primary">
+          ➕ Create Alert Rule
+        </Button>
+      </Box>
+
+      <Typography color="textSecondary" sx={{ mb: 2 }}>
+        Configure alert rules and view alert history
+      </Typography>
+
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography>Active Alert Rules (0)</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography color="textSecondary">
+            No alert rules configured yet. Click "Create Alert Rule" to get
+            started.
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+
+      <Accordion sx={{ mt: 1 }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography>Recent Alerts (Last 24h)</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography color="textSecondary">
+            Alert history will be displayed here
+          </Typography>
+        </AccordionDetails>
+      </Accordion>
+    </Box>
+  );
+
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6" gutterBottom>
+          {title}
+        </Typography>
+
+        {/* Tabs */}
+        <Box sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
+          <Tabs
+            value={activeTab}
+            onChange={(e, newValue) => setActiveTab(newValue)}
+            aria-label="Zone configuration tabs"
+          >
+            <Tab label="📍 Zone Setup" />
+            <Tab label="📊 Analytics" disabled={!selectedSensor} />
+            <Tab label="🔔 Alerts" disabled={!selectedSensor} />
+          </Tabs>
+        </Box>
+
+        {/* Tab Content */}
+        {activeTab === 0 && renderZoneSetupTab()}
+        {activeTab === 1 && renderAnalyticsTab()}
+        {activeTab === 2 && renderAlertsTab()}
 
         {/* Item Details Dialog */}
         <Dialog
