@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Button, Switch, FormControlLabel, Typography } from "@mui/material";
-import { apiCall } from "../utils/api";
+import { apiCall } from "../../services/vst/api_vst";
 
 const StreamRecorder = ({ baseUrl, authToken }) => {
   const [recording, setRecording] = useState(false);

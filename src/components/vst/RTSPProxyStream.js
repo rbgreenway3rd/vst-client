@@ -10,7 +10,7 @@ import {
 } from "@mui/material";
 // import videojs from "video.js";
 import "video.js/dist/video-js.css";
-import { getSensors, createRTSPProxy } from "../utils/api";
+import { getSensors, createRTSPProxy } from "../../services/vst/api_vst";
 
 const RTSPProxyStream = ({ baseUrl, authToken, onError }) => {
   const videoRef = useRef(null);

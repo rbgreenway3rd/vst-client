@@ -9,7 +9,7 @@ import {
   TextField,
   Button,
 } from "@mui/material";
-import { getSensors, getReplayStream } from "../utils/api";
+import { getSensors, getReplayStream } from "../../services/vst/api_vst";
 import videojs from "video.js";
 import "video.js/dist/video-js.css";
 

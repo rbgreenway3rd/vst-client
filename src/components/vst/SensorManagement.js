@@ -365,7 +365,7 @@ import {
   getSensorSettings,
   getSensorQOS,
   getSensorInfo,
-} from "../utils/api";
+} from "../../services/vst/api_vst";
 
 /* -------------------------------------------------------------
    Helper: Extract IP from RTSP URL (e.g., rtsp://user:pass@10.0.0.38:554/...)

@@ -11,7 +11,7 @@ import {
   Box,
   CircularProgress,
 } from "@mui/material";
-import { getSensors } from "../utils/api";
+import { getSensors } from "../../services/vst/api_vst";
 
 class VSTWebRTCClient {
   constructor(vstServerUrl) {

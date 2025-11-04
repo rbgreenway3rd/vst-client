@@ -10,8 +10,8 @@ import {
   Typography,
   Box,
 } from "@mui/material";
-import { getFiles, deleteFile, downloadFile } from "../utils/api";
-import { apiCall } from "../utils/api";
+import { getFiles, deleteFile, downloadFile } from "../../services/vst/api_vst";
+import { apiCall } from "../../services/vst/api_vst";
 
 const FileManagement = ({ baseUrl, authToken, onError }) => {
   const [files, setFiles] = useState([]);

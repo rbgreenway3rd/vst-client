@@ -1,0 +1,988 @@
+import React, { useState, useRef, useEffect } from "react";
+import {
+  Card,
+  CardContent,
+  Typography,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Button,
+  Box,
+  CircularProgress,
+  TextField,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+} from "@mui/material";
+import { getSensors } from "../../services/vst/api_vst";
+import {
+  createTripwireConfig,
+  updateRoisConfig,
+} from "../../services/emdx/api_emdx";
+import StreamingGatewayClient from "../../services/streaming-gateway/client";
+
+const TripwireConfig = ({
+  vstBaseUrl,
+  vstAuthToken,
+  baseUrl,
+  authToken,
+  // Reusability props with defaults
+  gatewayUrl = "http://192.168.1.26:30010",
+  streamIdPrefix = "camera-",
+  title = "Tripwire & ROI Configuration",
+}) => {
+  const canvasRef = useRef(null);
+  const imageRef = useRef(null);
+
+  const [sensors, setSensors] = useState([]);
+  const [selectedSensor, setSelectedSensor] = useState("");
+  const [snapshotUrl, setSnapshotUrl] = useState(null);
+  const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  // Drawing state - now tracks both tripwires and ROIs separately
+  const [tripwires, setTripwires] = useState([]);
+  const [rois, setRois] = useState([]);
+  const [currentItem, setCurrentItem] = useState(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [drawingMode, setDrawingMode] = useState(null); // 'tripwire' or 'roi'
+  const [itemDialogOpen, setItemDialogOpen] = useState(false);
+  const [itemName, setItemName] = useState("");
+  const [itemId, setItemId] = useState("");
+  const [directionP1, setDirectionP1] = useState(null);
+  const [directionP2, setDirectionP2] = useState(null);
+  const [isSettingDirection, setIsSettingDirection] = useState(false);
+  const [mousePosition, setMousePosition] = useState(null);
+  const [entryName, setEntryName] = useState("Entry side");
+  const [exitName, setExitName] = useState("Exit side");
+
+  // Image dimensions
+  const [imageDimensions, setImageDimensions] = useState({
+    width: 0,
+    height: 0,
+  });
+
+  // Fetch sensors on mount
+  useEffect(() => {
+    const fetchSensors = async () => {
+      try {
+        const data = await getSensors(vstBaseUrl, vstAuthToken);
+        const allSensors = Array.isArray(data) ? data : data.sensors || [];
+        const activeSensors = allSensors.filter((s) => s.state !== "removed");
+        setSensors(activeSensors);
+      } catch (error) {
+        console.error("Failed to fetch sensors:", error);
+        setError("Failed to fetch sensors: " + error.message);
+      }
+    };
+    fetchSensors();
+  }, [vstBaseUrl, vstAuthToken]);
+
+  // Redraw canvas when items or image changes
+  useEffect(() => {
+    if (snapshotUrl && canvasRef.current) {
+      drawCanvas();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    tripwires,
+    rois,
+    currentItem,
+    snapshotUrl,
+    directionP1,
+    directionP2,
+    mousePosition,
+  ]);
+
+  // Add keyboard event listener for undo functionality
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Undo last point when Backspace is pressed during drawing
+      if (
+        e.key === "Backspace" &&
+        isDrawing &&
+        currentItem &&
+        currentItem.length > 0
+      ) {
+        e.preventDefault(); // Prevent browser back navigation
+        const newPoints = [...currentItem];
+        newPoints.pop(); // Remove last point
+        setCurrentItem(newPoints);
+
+        if (newPoints.length === 0) {
+          setSuccess(
+            `Backspace to undo points. All points removed - click to start drawing again.`
+          );
+        } else {
+          setSuccess(
+            `Undo: Removed last point. ${newPoints.length} point(s) remaining.`
+          );
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isDrawing, currentItem]);
+
+  const handleCaptureSnapshot = async () => {
+    if (!selectedSensor) {
+      setError("Please select a sensor first");
+      return;
+    }
+
+    setError("");
+    setSuccess("");
+    setIsLoadingSnapshot(true);
+
+    try {
+      const gatewayClient = new StreamingGatewayClient(gatewayUrl);
+      const gatewayStreamId = `${streamIdPrefix}${selectedSensor}`;
+
+      // Get snapshot as data URL
+      const dataUrl = await gatewayClient.getSnapshotDataURL(gatewayStreamId);
+      setSnapshotUrl(dataUrl);
+
+      // Clear any existing items
+      setTripwires([]);
+      setRois([]);
+      setCurrentItem(null);
+
+      setSuccess("Snapshot captured successfully!");
+    } catch (err) {
+      console.error("Failed to capture snapshot:", err);
+      setError("Failed to capture snapshot: " + err.message);
+    } finally {
+      setIsLoadingSnapshot(false);
+    }
+  };
+
+  const handleImageLoad = () => {
+    if (imageRef.current && canvasRef.current) {
+      const img = imageRef.current;
+      const canvas = canvasRef.current;
+
+      // Set canvas size to match image
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+
+      setImageDimensions({
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+      });
+
+      drawCanvas();
+    }
+  };
+
+  const drawCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    const img = imageRef.current;
+
+    if (!img) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw completed tripwires (green with direction arrows)
+    tripwires.forEach((tripwire) => {
+      drawPolygon(ctx, tripwire.wire, "#00ff00", false);
+
+      // Draw direction arrow
+      if (tripwire.direction) {
+        drawDirectionArrow(ctx, tripwire.direction.p1, tripwire.direction.p2);
+      }
+    });
+
+    // Draw completed ROIs (blue, no direction)
+    rois.forEach((roi) => {
+      drawPolygon(ctx, roi.wire, "#0088ff", false);
+    });
+
+    // Draw current item being drawn (yellow for tripwire, cyan for ROI)
+    if (currentItem && currentItem.length > 0) {
+      const color = drawingMode === "tripwire" ? "#ffff00" : "#00ffff";
+      drawPolygon(ctx, currentItem, color, true);
+
+      // Draw rubberband line for tripwire when mouse is moving
+      if (drawingMode === "tripwire" && mousePosition && isDrawing) {
+        const lastPoint = currentItem[currentItem.length - 1];
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // Dashed line for preview
+        ctx.beginPath();
+        ctx.moveTo(lastPoint.x, lastPoint.y);
+        ctx.lineTo(mousePosition.x, mousePosition.y);
+        ctx.stroke();
+        ctx.setLineDash([]); // Reset to solid line
+      }
+    }
+
+    // Draw direction arrow
+    if (directionP1 && directionP2) {
+      // Final arrow with both points set
+      drawDirectionArrow(ctx, directionP1, directionP2);
+    } else if (directionP1 && mousePosition && isSettingDirection) {
+      // Dynamic arrow following mouse (only entry point set)
+      drawDirectionArrow(ctx, directionP1, mousePosition);
+    } else if (directionP1) {
+      // Just the entry point
+      drawPoint(ctx, directionP1, "#ff0000", 10);
+      ctx.fillStyle = "#ff0000";
+      ctx.font = "bold 14px Arial";
+      ctx.fillText("ENTRY", directionP1.x + 15, directionP1.y - 10);
+    }
+  };
+
+  const drawPolygon = (ctx, points, color, isCurrent) => {
+    if (points.length < 2) return;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+
+    // Don't close the polygon - keep it as an open polyline
+    ctx.stroke();
+
+    // Draw points
+    points.forEach((point, index) => {
+      drawPoint(ctx, point, color, 6);
+
+      // Draw point labels
+      ctx.fillStyle = color;
+      ctx.font = "12px Arial";
+      ctx.fillText(`${index}`, point.x + 10, point.y - 10);
+    });
+  };
+
+  const drawPoint = (ctx, point, color, size) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, size, 0, 2 * Math.PI);
+    ctx.fill();
+  };
+
+  const drawDirectionArrow = (ctx, p1, p2) => {
+    // Draw arrow line
+    ctx.strokeStyle = "#ff00ff";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+
+    // Calculate angle for arrowhead
+    const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const arrowLength = 25;
+    const arrowWidth = Math.PI / 6;
+
+    // Draw arrowhead at p2 (exit point)
+    ctx.fillStyle = "#ff00ff";
+    ctx.beginPath();
+    ctx.moveTo(p2.x, p2.y);
+    ctx.lineTo(
+      p2.x - arrowLength * Math.cos(angle - arrowWidth),
+      p2.y - arrowLength * Math.sin(angle - arrowWidth)
+    );
+    ctx.lineTo(
+      p2.x - arrowLength * Math.cos(angle + arrowWidth),
+      p2.y - arrowLength * Math.sin(angle + arrowWidth)
+    );
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw circle at entry point (p1) for clarity
+    ctx.fillStyle = "#ff0000";
+    ctx.beginPath();
+    ctx.arc(p1.x, p1.y, 10, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // Add label "ENTRY"
+    ctx.fillStyle = "#ff0000";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("ENTRY", p1.x + 15, p1.y - 10);
+
+    // Draw arrow circle at exit point (p2)
+    ctx.fillStyle = "#ff00ff";
+    ctx.beginPath();
+    ctx.arc(p2.x, p2.y, 8, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // Add label "EXIT"
+    ctx.fillStyle = "#ff00ff";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("EXIT", p2.x + 15, p2.y - 10);
+  };
+
+  const handleCanvasClick = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top) * scaleY);
+
+    // If setting direction points
+    if (isSettingDirection) {
+      if (!directionP1) {
+        setDirectionP1({ x, y });
+        setSuccess(
+          "Entry point set! Move your mouse to aim the arrow, then click to set EXIT."
+        );
+      } else if (!directionP2) {
+        setDirectionP2({ x, y });
+        setIsSettingDirection(false);
+        setMousePosition(null);
+        setSuccess("Direction arrow set! You can now save the tripwire.");
+        // Reopen dialog after setting direction
+        setItemDialogOpen(true);
+      }
+      return;
+    }
+
+    // If drawing
+    if (isDrawing) {
+      const newPoint = { x, y };
+      setCurrentItem([...(currentItem || []), newPoint]);
+    }
+  };
+
+  const handleCanvasRightClick = (e) => {
+    e.preventDefault(); // Prevent context menu from appearing
+
+    // Finish drawing when right-clicking during tripwire drawing
+    if (
+      isDrawing &&
+      drawingMode === "tripwire" &&
+      currentItem &&
+      currentItem.length >= 2
+    ) {
+      handleFinishDrawing();
+    }
+  };
+
+  const handleCanvasMouseMove = (e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top) * scaleY);
+
+    // Track mouse when setting direction and entry point is set
+    if (isSettingDirection && directionP1 && !directionP2) {
+      setMousePosition({ x, y });
+    }
+
+    // Track mouse when drawing tripwire (for rubberband line)
+    if (
+      isDrawing &&
+      drawingMode === "tripwire" &&
+      currentItem &&
+      currentItem.length > 0
+    ) {
+      setMousePosition({ x, y });
+    }
+  };
+
+  const handleStartDrawing = (mode) => {
+    setDrawingMode(mode); // 'tripwire' or 'roi'
+    setIsDrawing(true);
+    setCurrentItem([]);
+    setDirectionP1(null);
+    setDirectionP2(null);
+    setError("");
+    setSuccess("");
+  };
+
+  const handleFinishDrawing = () => {
+    const minPoints = drawingMode === "tripwire" ? 2 : 3;
+    if (!currentItem || currentItem.length < minPoints) {
+      setError(
+        `${
+          drawingMode === "tripwire" ? "Tripwire" : "ROI"
+        } must have at least ${minPoints} points`
+      );
+      return;
+    }
+
+    setIsDrawing(false);
+
+    // For tripwires, automatically start direction arrow setting
+    if (drawingMode === "tripwire") {
+      setIsSettingDirection(true);
+      setDirectionP1(null);
+      setDirectionP2(null);
+      setMousePosition(null);
+      setSuccess("Click the ENTRY point on the image");
+    } else {
+      // For ROIs, open dialog immediately
+      setItemDialogOpen(true);
+    }
+  };
+
+  const handleSetDirection = () => {
+    // Close dialog to allow clicking on canvas
+    setItemDialogOpen(false);
+    setIsSettingDirection(true);
+    setDirectionP1(null);
+    setDirectionP2(null);
+    setMousePosition(null);
+    setError("");
+    setSuccess("Click the ENTRY point on the image");
+  };
+
+  const handleSaveItem = () => {
+    if (!itemName.trim()) {
+      setError(
+        `Please provide a ${
+          drawingMode === "tripwire" ? "tripwire" : "ROI"
+        } name`
+      );
+      return;
+    }
+
+    // Tripwires require direction, ROIs don't
+    if (drawingMode === "tripwire" && (!directionP1 || !directionP2)) {
+      setError(
+        "Please set direction arrow (click 'Set Direction' and click two points on canvas)"
+      );
+      return;
+    }
+
+    // Auto-generate ID from name if not provided
+    const finalId =
+      itemId.trim() || itemName.toLowerCase().replace(/\s+/g, "_");
+
+    const newItem = {
+      id: finalId,
+      name: itemName,
+      wire: currentItem,
+    };
+
+    // Add direction only for tripwires
+    if (drawingMode === "tripwire") {
+      newItem.direction = {
+        entry: { name: entryName.trim() || "entry" },
+        exit: { name: exitName.trim() || "exit" },
+        p1: directionP1,
+        p2: directionP2,
+      };
+    }
+
+    // Add to appropriate list
+    if (drawingMode === "tripwire") {
+      setTripwires([...tripwires, newItem]);
+    } else {
+      setRois([...rois, newItem]);
+    }
+
+    setCurrentItem(null);
+    setItemDialogOpen(false);
+    setItemName("");
+    setItemId("");
+    setDirectionP1(null);
+    setDirectionP2(null);
+    setMousePosition(null);
+    setIsSettingDirection(false);
+    setSuccess(
+      `${
+        drawingMode === "tripwire" ? "Tripwire" : "ROI"
+      } "${itemName}" (ID: ${finalId}) added successfully!`
+    );
+  };
+
+  const handleCancelDrawing = () => {
+    setCurrentItem(null);
+    setIsDrawing(false);
+    setItemDialogOpen(false);
+    setItemName("");
+    setItemId("");
+    setDirectionP1(null);
+    setDirectionP2(null);
+    setMousePosition(null);
+    setIsSettingDirection(false);
+    setDrawingMode(null);
+    setEntryName("entry");
+    setExitName("exit");
+  };
+
+  const handleClearAll = () => {
+    setTripwires([]);
+    setRois([]);
+    setCurrentItem(null);
+    setIsDrawing(false);
+    setDirectionP1(null);
+    setDirectionP2(null);
+  };
+
+  const handleSubmitToEMDX = async () => {
+    if (tripwires.length === 0 && rois.length === 0) {
+      setError("No tripwires or ROIs to submit. Draw at least one first.");
+      return;
+    }
+
+    if (!selectedSensor) {
+      setError("No sensor selected");
+      return;
+    }
+
+    setError("");
+    setSuccess("");
+
+    try {
+      let successMessages = [];
+
+      // Submit tripwires if any exist
+      if (tripwires.length > 0) {
+        const tripwirePayload = {
+          deleteIfPresent: true,
+          tripwires: tripwires,
+          sensorId: selectedSensor,
+        };
+
+        console.log("Submitting tripwire config to EMDX:", tripwirePayload);
+        await createTripwireConfig(
+          baseUrl,
+          authToken,
+          selectedSensor,
+          tripwirePayload
+        );
+        successMessages.push(`${tripwires.length} tripwire(s)`);
+      }
+
+      // Submit ROIs if any exist
+      if (rois.length > 0) {
+        const roiPayload = {
+          deleteIfPresent: true,
+          rois: rois.map((roi) => ({
+            id: roi.id,
+            name: roi.name,
+            polygon: roi.wire, // Map wire to polygon for ROI API
+          })),
+          sensorId: selectedSensor,
+        };
+
+        console.log("Submitting ROI config to EMDX:", roiPayload);
+        await updateRoisConfig(baseUrl, authToken, roiPayload);
+        successMessages.push(`${rois.length} ROI(s)`);
+      }
+
+      setSuccess(
+        `✅ Successfully submitted ${successMessages.join(
+          " and "
+        )} for sensor ${selectedSensor}!`
+      );
+    } catch (err) {
+      console.error("Failed to submit configuration:", err);
+      setError(`Failed to submit configuration: ` + err.message);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent>
+        <Typography variant="h6" gutterBottom>
+          {title}
+        </Typography>
+
+        <FormControl fullWidth sx={{ mb: 2 }}>
+          <InputLabel>Select Camera</InputLabel>
+          <Select
+            value={selectedSensor}
+            onChange={(e) => setSelectedSensor(e.target.value)}
+            disabled={isDrawing}
+          >
+            {sensors.map((s) => {
+              const isOffline = s.state === "offline" || s.state === "OFFLINE";
+              const sensorId = s.sensorId || s.id;
+              return (
+                <MenuItem key={sensorId} value={sensorId} disabled={isOffline}>
+                  {s.name} ({sensorId}) {isOffline && "- OFFLINE"}
+                </MenuItem>
+              );
+            })}
+          </Select>
+        </FormControl>
+
+        <Box sx={{ mb: 2, display: "flex", gap: 1, flexWrap: "wrap" }}>
+          <Button
+            variant="contained"
+            onClick={handleCaptureSnapshot}
+            disabled={!selectedSensor || isLoadingSnapshot || isDrawing}
+          >
+            {isLoadingSnapshot ? "Capturing..." : "📷 Capture Snapshot"}
+          </Button>
+
+          {snapshotUrl && !isDrawing && (
+            <>
+              <Button
+                variant="contained"
+                color="primary"
+                onClick={() => handleStartDrawing("tripwire")}
+              >
+                ✏️ Draw Tripwire
+              </Button>
+
+              <Button
+                variant="contained"
+                color="secondary"
+                onClick={() => handleStartDrawing("roi")}
+              >
+                🔷 Draw ROI
+              </Button>
+            </>
+          )}
+
+          {isDrawing && (
+            <>
+              <Button
+                variant="contained"
+                color="success"
+                onClick={handleFinishDrawing}
+                disabled={
+                  !currentItem ||
+                  currentItem.length < (drawingMode === "tripwire" ? 2 : 3)
+                }
+              >
+                ✓ Finish {drawingMode === "tripwire" ? "Tripwire" : "ROI"}
+              </Button>
+              <Button
+                variant="outlined"
+                color="warning"
+                onClick={handleCancelDrawing}
+              >
+                ✗ Cancel
+              </Button>
+            </>
+          )}
+
+          {snapshotUrl &&
+            !isDrawing &&
+            (tripwires.length > 0 || rois.length > 0) && (
+              <>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  onClick={handleClearAll}
+                >
+                  🗑️ Clear All
+                </Button>
+
+                <Button
+                  variant="contained"
+                  color="success"
+                  onClick={handleSubmitToEMDX}
+                >
+                  📤 Submit to EMDX
+                </Button>
+              </>
+            )}
+
+          {isLoadingSnapshot && <CircularProgress size={24} />}
+        </Box>
+
+        {success && (
+          <Box
+            sx={{
+              mb: 2,
+              p: 2,
+              backgroundColor: "#e8f5e9",
+              borderRadius: 1,
+              border: "1px solid #4caf50",
+            }}
+          >
+            <Typography color="success.main">{success}</Typography>
+          </Box>
+        )}
+
+        {error && (
+          <Box
+            sx={{
+              mb: 2,
+              p: 2,
+              backgroundColor: "#ffebee",
+              borderRadius: 1,
+              border: "1px solid #ef5350",
+            }}
+          >
+            <Typography color="error" sx={{ whiteSpace: "pre-wrap" }}>
+              {error}
+            </Typography>
+          </Box>
+        )}
+
+        {snapshotUrl && (
+          <Box sx={{ position: "relative", mb: 2 }}>
+            <Box
+              sx={{ mb: 1, p: 1, backgroundColor: "#e3f2fd", borderRadius: 1 }}
+            >
+              <Typography
+                variant="body2"
+                sx={{ fontWeight: "bold", whiteSpace: "pre-line" }}
+              >
+                {isDrawing
+                  ? drawingMode === "tripwire"
+                    ? `🖱️ Left click on the image to add points to the tripwire polygon (min 2 points)\n🖱️ Right click on the image to finish drawing tripwire\n⌨️ Press Backspace to undo last point`
+                    : `🖱️ Left click on the image to add points to the ROI polygon (min 3 points)\n🖱️ Right click on the image to finish drawing ROI`
+                  : isSettingDirection
+                  ? "🎯 Click TWO points: 1️⃣ Entry side (red), then 2️⃣ Exit side (blue)"
+                  : `📊 Camera: ${selectedSensor} | Image: ${imageDimensions.width}x${imageDimensions.height} | Tripwires: ${tripwires.length} | ROIs: ${rois.length}`}
+              </Typography>
+            </Box>
+
+            <Box
+              sx={{
+                position: "relative",
+                width: "100%",
+                maxWidth: "1200px",
+                height: "675px", // 16:9 aspect ratio
+                backgroundColor: "#000",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto",
+              }}
+            >
+              <img
+                ref={imageRef}
+                src={snapshotUrl}
+                alt="Camera snapshot"
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "100%",
+                  width: "auto",
+                  height: "auto",
+                  display: "block",
+                  border: "2px solid #ccc",
+                  objectFit: "contain",
+                }}
+                onLoad={handleImageLoad}
+              />
+              <canvas
+                ref={canvasRef}
+                onClick={handleCanvasClick}
+                onContextMenu={handleCanvasRightClick}
+                onMouseMove={handleCanvasMouseMove}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  height: "100%",
+                  cursor:
+                    isDrawing || isSettingDirection ? "crosshair" : "default",
+                }}
+              />
+            </Box>
+          </Box>
+        )}
+
+        {!snapshotUrl && !isLoadingSnapshot && (
+          <Box
+            sx={{
+              width: "100%",
+              height: 300,
+              backgroundColor: "#f5f5f5",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 1,
+            }}
+          >
+            <Typography color="textSecondary">
+              Select a camera and capture a snapshot to begin
+            </Typography>
+          </Box>
+        )}
+
+        {/* Item Details Dialog */}
+        <Dialog
+          open={itemDialogOpen}
+          onClose={handleCancelDrawing}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>
+            {drawingMode === "tripwire" ? "Tripwire" : "ROI"} Details
+          </DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              margin="dense"
+              label={`${
+                drawingMode === "tripwire" ? "Tripwire" : "ROI"
+              } Name *`}
+              fullWidth
+              value={itemName}
+              onChange={(e) => {
+                const newName = e.target.value;
+                setItemName(newName);
+                // Auto-populate ID based on name (convert to lowercase with underscores)
+                setItemId(newName.toLowerCase().replace(/\s+/g, "_"));
+              }}
+              placeholder={`e.g., Main ${
+                drawingMode === "tripwire" ? "door" : "area"
+              }`}
+              sx={{ mb: 2 }}
+            />
+            <TextField
+              margin="dense"
+              label={`${
+                drawingMode === "tripwire" ? "Tripwire" : "ROI"
+              } ID (auto-generated, editable)`}
+              fullWidth
+              value={itemId}
+              onChange={(e) => setItemId(e.target.value)}
+              placeholder="Auto-generated from name"
+              helperText="Auto-populated based on name. You can edit if needed."
+              sx={{ mb: 3 }}
+            />
+
+            {drawingMode === "tripwire" && (
+              <>
+                <Typography
+                  variant="subtitle2"
+                  sx={{ mb: 1, fontWeight: "bold" }}
+                >
+                  Direction Arrow (Entry → Exit)
+                </Typography>
+
+                <Box
+                  sx={{
+                    mb: 2,
+                    p: 2,
+                    backgroundColor: "#f5f5f5",
+                    borderRadius: 1,
+                  }}
+                >
+                  {!directionP1 || !directionP2 ? (
+                    <>
+                      <Typography
+                        variant="body2"
+                        color="textSecondary"
+                        sx={{ mb: 2 }}
+                      >
+                        ⚠️ Direction arrow not set
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        onClick={handleSetDirection}
+                        fullWidth
+                        color="primary"
+                      >
+                        📍 Set Direction Arrow
+                      </Button>
+                      <Typography
+                        variant="caption"
+                        color="textSecondary"
+                        sx={{ mt: 1, display: "block" }}
+                      >
+                        Click this button, then click two points on the image:
+                        entry side first, then exit side
+                      </Typography>
+                    </>
+                  ) : (
+                    <>
+                      <Typography
+                        variant="body2"
+                        sx={{ color: "green", mb: 1 }}
+                      >
+                        ✓ Direction arrow set
+                      </Typography>
+                      <Box
+                        sx={{ p: 1, backgroundColor: "white", borderRadius: 1 }}
+                      >
+                        <Typography variant="body2">
+                          🔴 Entry: ({directionP1.x}, {directionP1.y})
+                        </Typography>
+                        <Typography variant="body2">
+                          🔵 Exit: ({directionP2.x}, {directionP2.y})
+                        </Typography>
+                      </Box>
+                      <Button
+                        variant="outlined"
+                        onClick={handleSetDirection}
+                        fullWidth
+                        size="small"
+                        sx={{ mt: 1 }}
+                      >
+                        Change Direction
+                      </Button>
+                    </>
+                  )}
+                </Box>
+
+                <Typography
+                  variant="subtitle2"
+                  sx={{ mb: 1, mt: 2, fontWeight: "bold" }}
+                >
+                  Direction Labels
+                </Typography>
+
+                <TextField
+                  margin="dense"
+                  label="Entry Side Name"
+                  fullWidth
+                  value={entryName}
+                  onChange={(e) => setEntryName(e.target.value)}
+                  placeholder="e.g., Inside the room, North side"
+                  helperText="Edit the friendly name for the entry direction"
+                  sx={{ mb: 2 }}
+                />
+
+                <TextField
+                  margin="dense"
+                  label="Exit Side Name"
+                  fullWidth
+                  value={exitName}
+                  onChange={(e) => setExitName(e.target.value)}
+                  placeholder="e.g., Outside the room, South side"
+                  helperText="Edit the friendly name for the exit direction"
+                  sx={{ mb: 2 }}
+                />
+              </>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCancelDrawing} color="error">
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveItem}
+              color="primary"
+              variant="contained"
+              disabled={
+                !itemName ||
+                (drawingMode === "tripwire" && (!directionP1 || !directionP2))
+              }
+            >
+              Save {drawingMode === "tripwire" ? "Tripwire" : "ROI"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default TripwireConfig;
