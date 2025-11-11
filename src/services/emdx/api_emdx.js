@@ -49,8 +49,12 @@ export const getHealth = (baseUrl, authToken) =>
 // =========================
 
 // FOV Alert Rules
-export const listFovAlertRules = (baseUrl, authToken) =>
-  emdxApiCall(baseUrl, "/config/rule/alerts/fov", { authToken });
+export const listFovAlertRules = (baseUrl, authToken, sensorId = null) => {
+  const endpoint = sensorId
+    ? `/config/rule/alerts/fov?sensorId=${sensorId}`
+    : "/config/rule/alerts/fov";
+  return emdxApiCall(baseUrl, endpoint, { authToken });
+};
 
 export const createFovAlertRule = (baseUrl, authToken, ruleData) =>
   emdxApiCall(baseUrl, "/config/rule/alerts/fov", {
@@ -66,25 +70,42 @@ export const deleteFovAlertRule = (baseUrl, authToken, ruleId) =>
   });
 
 // Tripwire Alert Rules
-export const listTripwireAlertRules = (baseUrl, authToken) =>
-  emdxApiCall(baseUrl, "/config/rule/alerts/tripwire", { authToken });
+export const listTripwireAlertRules = (baseUrl, authToken, sensorId = null) => {
+  const endpoint = sensorId
+    ? `/api/v2/config/rule/alerts/tripwire?sensorId=${sensorId}`
+    : "/api/v2/config/rule/alerts/tripwire";
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};
 
 export const createTripwireAlertRule = (baseUrl, authToken, ruleData) =>
-  emdxApiCall(baseUrl, "/config/rule/alerts/tripwire", {
+  emdxApiCall(baseUrl, "/api/v2/config/rule/alerts/tripwire", {
     method: "POST",
     data: ruleData,
     authToken,
+    headers: { "User-Type": "Admin" },
   });
 
 export const deleteTripwireAlertRule = (baseUrl, authToken, ruleId) =>
-  emdxApiCall(baseUrl, `/config/rule/alerts/tripwire?rule_id=${ruleId}`, {
-    method: "DELETE",
-    authToken,
-  });
+  emdxApiCall(
+    baseUrl,
+    `/api/v2/config/rule/alerts/tripwire?rule_id=${ruleId}`,
+    {
+      method: "DELETE",
+      authToken,
+      headers: { "User-Type": "Admin" },
+    }
+  );
 
 // ROI Alert Rules
-export const listRoiAlertRules = (baseUrl, authToken) =>
-  emdxApiCall(baseUrl, "/config/rule/alerts/roi", { authToken });
+export const listRoiAlertRules = (baseUrl, authToken, sensorId = null) => {
+  const endpoint = sensorId
+    ? `/config/rule/alerts/roi?sensorId=${sensorId}`
+    : "/config/rule/alerts/roi";
+  return emdxApiCall(baseUrl, endpoint, { authToken });
+};
 
 export const createRoiAlertRule = (baseUrl, authToken, ruleData) =>
   emdxApiCall(baseUrl, "/config/rule/alerts/roi", {
@@ -151,14 +172,21 @@ export const updateSensorsConfig = (baseUrl, authToken, sensorsData) =>
     authToken,
   });
 
-// Get ROIs config
-export const getRoisConfig = (baseUrl, authToken) =>
-  emdxApiCall(baseUrl, "/config/rois", { authToken });
+// Get ROIs config (v2 API)
+export const getRoisConfig = (baseUrl, authToken, sensorId = null) => {
+  const endpoint = sensorId
+    ? `/api/v2/config/roi?sensorId=${sensorId}`
+    : "/api/v2/config/roi";
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};
 
-// Update ROIs config (v2 API)
+// Update ROIs config (legacy, may not be supported)
 export const updateRoisConfig = (baseUrl, authToken, roisData) =>
-  emdxApiCall(baseUrl, `/api/v2/config/roi?sensorId=${roisData.sensorId}`, {
-    method: "POST",
+  emdxApiCall(baseUrl, "/config/rois", {
+    method: "PUT",
     data: roisData,
     authToken,
     headers: {
@@ -166,9 +194,32 @@ export const updateRoisConfig = (baseUrl, authToken, roisData) =>
     },
   });
 
-// Get Tripwires config
-export const getTripwiresConfig = (baseUrl, authToken) =>
-  emdxApiCall(baseUrl, "/config/tripwires", { authToken });
+// Create/Update ROI Configuration (v2 API)
+export const createRoiConfig = (
+  baseUrl,
+  authToken,
+  sensorId,
+  configData
+) =>
+  emdxApiCall(baseUrl, `/api/v2/config/roi?sensorId=${sensorId}`, {
+    method: "POST",
+    data: configData,
+    authToken,
+    headers: {
+      "User-Type": "Admin", // Required by EMDX API
+    },
+  });
+
+// Get Tripwires config (v2 API)
+export const getTripwiresConfig = (baseUrl, authToken, sensorId = null) => {
+  const endpoint = sensorId
+    ? `/api/v2/config/tripwire?sensorId=${sensorId}`
+    : "/api/v2/config/tripwire";
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};
 
 // Update Tripwires config
 export const updateTripwiresConfig = (baseUrl, authToken, tripwiresData) =>
@@ -193,6 +244,54 @@ export const createTripwireConfig = (
       "User-Type": "Admin", // Required by EMDX API
     },
   });
+
+// Delete Tripwire Configuration (v2 API)
+export const deleteTripwireConfig = (
+  baseUrl,
+  authToken,
+  sensorId,
+  tripwireId = null,
+  deleteIfPresent = false
+) => {
+  let endpoint = `/api/v2/config/tripwire?sensorId=${sensorId}`;
+  if (tripwireId) {
+    endpoint += `&tripwireId=${tripwireId}`;
+  }
+  if (deleteIfPresent) {
+    endpoint += `&deleteIfPresent=true`;
+  }
+  return emdxApiCall(baseUrl, endpoint, {
+    method: "DELETE",
+    authToken,
+    headers: {
+      "User-Type": "Admin",
+    },
+  });
+};
+
+// Delete ROI Configuration (v2 API)
+export const deleteRoiConfig = (
+  baseUrl,
+  authToken,
+  sensorId,
+  roiId = null,
+  deleteIfPresent = false
+) => {
+  let endpoint = `/api/v2/config/roi?sensorId=${sensorId}`;
+  if (roiId) {
+    endpoint += `&roiId=${roiId}`;
+  }
+  if (deleteIfPresent) {
+    endpoint += `&deleteIfPresent=true`;
+  }
+  return emdxApiCall(baseUrl, endpoint, {
+    method: "DELETE",
+    authToken,
+    headers: {
+      "User-Type": "Admin",
+    },
+  });
+};
 
 // =========================
 // === Analytics/Metrics ===

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   drawPolygon,
   drawDirectionArrow,
@@ -255,10 +255,19 @@ export const useZoneDrawing = (canvasRef, imageRef) => {
   const deleteZone = (id, type) => {
     if (type === "tripwire") {
       setTripwires(tripwires.filter((t) => t.id !== id));
-    } else {
+    } else if (type === "roi") {
       setRois(rois.filter((r) => r.id !== id));
     }
   };
+
+  const loadExistingZones = useCallback((existingTripwires, existingRois) => {
+    if (existingTripwires) {
+      setTripwires(existingTripwires);
+    }
+    if (existingRois) {
+      setRois(existingRois);
+    }
+  }, []); // Empty dependencies - this function doesn't depend on any external values
 
   return {
     // State
@@ -282,5 +291,6 @@ export const useZoneDrawing = (canvasRef, imageRef) => {
     cancelDrawing,
     clearAllZones,
     deleteZone,
+    loadExistingZones,
   };
 };

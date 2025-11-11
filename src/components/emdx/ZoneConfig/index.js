@@ -3,7 +3,11 @@ import { Card, CardContent, Typography, Tabs, Tab, Box } from "@mui/material";
 import { getSensors } from "../../../services/vst/api_vst";
 import {
   createTripwireConfig,
-  updateRoisConfig,
+  createRoiConfig,
+  deleteTripwireConfig,
+  deleteRoiConfig,
+  getTripwiresConfig,
+  getRoisConfig,
 } from "../../../services/emdx/api_emdx";
 import { useSnapshot } from "./hooks/useSnapshot";
 import { useZoneDrawing } from "./hooks/useZoneDrawing";
@@ -70,6 +74,7 @@ const ZoneConfig = ({
     cancelDrawing,
     clearAllZones,
     deleteZone,
+    loadExistingZones,
   } = useZoneDrawing(canvasRef, imageRef);
 
   // Fetch sensors on mount
@@ -88,6 +93,80 @@ const ZoneConfig = ({
     fetchSensors();
   }, [vstBaseUrl, vstAuthToken]);
 
+  // Fetch existing tripwires and ROIs when sensor is selected
+  useEffect(() => {
+    const fetchExistingConfigurations = async () => {
+      if (!selectedSensor || !snapshotUrl) return; // Only fetch if sensor selected and snapshot captured
+
+      let sensorTripwires = [];
+      let sensorRois = [];
+
+      // Fetch tripwires (handle 422 as "no data")
+      try {
+        const tripwiresData = await getTripwiresConfig(
+          baseUrl,
+          authToken,
+          selectedSensor
+        );
+        console.log("Fetched tripwires config:", tripwiresData);
+
+        // Extract tripwires array - handle both possible formats
+        if (Array.isArray(tripwiresData)) {
+          sensorTripwires = tripwiresData;
+        } else if (tripwiresData?.tripwires) {
+          sensorTripwires = tripwiresData.tripwires;
+        } else if (tripwiresData?.data) {
+          sensorTripwires = tripwiresData.data;
+        }
+      } catch (error) {
+        // 422 means no tripwires configured yet - that's OK
+        if (!error.message?.includes("422")) {
+          console.error("Failed to fetch tripwires:", error);
+        }
+      }
+
+      // Fetch ROIs (handle 422 as "no data")
+      try {
+        const roisData = await getRoisConfig(
+          baseUrl,
+          authToken,
+          selectedSensor
+        );
+        console.log("Fetched ROIs config:", roisData);
+
+        // Extract ROIs array - handle both possible formats
+        if (Array.isArray(roisData)) {
+          sensorRois = roisData;
+        } else if (roisData?.rois) {
+          sensorRois = roisData.rois;
+        } else if (roisData?.data) {
+          sensorRois = roisData.data;
+        }
+      } catch (error) {
+        // 422 means no ROIs configured yet - that's OK
+        if (!error.message?.includes("422")) {
+          console.error("Failed to fetch ROIs:", error);
+        }
+      }
+
+      console.log("Loaded tripwires for sensor:", sensorTripwires);
+      console.log("Loaded ROIs for sensor:", sensorRois);
+
+      // Load them into the drawing state
+      if (sensorTripwires.length > 0 || sensorRois.length > 0) {
+        loadExistingZones(sensorTripwires, sensorRois);
+        setSuccess(
+          `Loaded ${sensorTripwires.length} tripwire(s) and ${sensorRois.length} ROI(s)`
+        );
+      } else {
+        // Clear zones if nothing configured
+        loadExistingZones([], []);
+      }
+    };
+
+    fetchExistingConfigurations();
+  }, [selectedSensor, snapshotUrl, baseUrl, authToken, loadExistingZones]);
+
   // Handle snapshot capture
   const handleCaptureSnapshot = async () => {
     setError("");
@@ -95,8 +174,10 @@ const ZoneConfig = ({
 
     try {
       await captureSnapshot(selectedSensor);
-      clearAllZones();
-      setSuccess("Snapshot captured successfully!");
+      // Don't clear zones automatically - they'll be reloaded by the useEffect
+      setSuccess(
+        "Snapshot captured successfully! Loading existing configurations..."
+      );
     } catch (err) {
       console.error("Failed to capture snapshot:", err);
       setError("Failed to capture snapshot: " + err.message);
@@ -194,9 +275,86 @@ const ZoneConfig = ({
   };
 
   // Handle cancel
+  // Handle cancel drawing
   const handleCancelDrawing = () => {
     cancelDrawing();
     setItemDialogOpen(false);
+  };
+
+  // Handle delete zone with API persistence
+  const handleDeleteZone = async (id, type) => {
+    if (!selectedSensor) {
+      setError("No sensor selected");
+      return;
+    }
+
+    // Delete from local state first
+    deleteZone(id, type);
+
+    // Then persist to EMDX API using DELETE endpoint
+    try {
+      if (type === "tripwire") {
+        await deleteTripwireConfig(
+          baseUrl,
+          authToken,
+          selectedSensor,
+          id, // specific tripwireId to delete
+          true // deleteIfPresent
+        );
+      } else if (type === "roi") {
+        await deleteRoiConfig(
+          baseUrl,
+          authToken,
+          selectedSensor,
+          id, // specific roiId to delete
+          true // deleteIfPresent
+        );
+      }
+
+      setSuccess(`✅ ${type === "tripwire" ? "Tripwire" : "ROI"} deleted successfully`);
+    } catch (err) {
+      console.error(`Failed to delete ${type}:`, err);
+      setError(`Failed to delete ${type}: ${err.message}`);
+      // Note: Local state is already updated, but server sync failed
+      // You might want to reload from server here
+    }
+  };
+
+  // Handle clear all zones with API persistence
+  const handleClearAllZones = async () => {
+    if (!selectedSensor) {
+      setError("No sensor selected");
+      return;
+    }
+
+    if (!window.confirm("Are you sure you want to clear all tripwires and ROIs? This cannot be undone.")) {
+      return;
+    }
+
+    // Clear local state first
+    clearAllZones();
+
+    // Then persist to EMDX API using POST with empty arrays
+    try {
+      // Clear all tripwires for this sensor
+      const emptyTripwirePayload = {
+        deleteIfPresent: true,
+        tripwires: [],
+        sensorId: selectedSensor,
+      };
+
+      await createTripwireConfig(
+        baseUrl,
+        authToken,
+        selectedSensor,
+        emptyTripwirePayload
+      );
+
+      setSuccess("✅ All tripwires cleared successfully");
+    } catch (err) {
+      console.error("Failed to clear zones:", err);
+      setError(`Failed to clear zones: ${err.message}`);
+    }
   };
 
   // Handle submit to EMDX
@@ -248,7 +406,7 @@ const ZoneConfig = ({
         };
 
         console.log("Submitting ROI config to EMDX:", roiPayload);
-        await updateRoisConfig(baseUrl, authToken, roiPayload);
+        await createRoiConfig(baseUrl, authToken, selectedSensor, roiPayload);
         successMessages.push(`${rois.length} ROI(s)`);
       }
 
@@ -304,8 +462,8 @@ const ZoneConfig = ({
             onStartDrawing={handleStartDrawing}
             onFinishDrawing={handleFinishDrawing}
             onCancelDrawing={handleCancelDrawing}
-            onDeleteZone={deleteZone}
-            onClearAll={clearAllZones}
+            onDeleteZone={handleDeleteZone}
+            onClearAll={handleClearAllZones}
             onSubmit={handleSubmitToEMDX}
             canvasRef={canvasRef}
             imageRef={imageRef}
@@ -321,6 +479,8 @@ const ZoneConfig = ({
             selectedSensor={selectedSensor}
             pendingRuleForTripwire={pendingRuleForTripwire}
             onClearPendingRule={() => setPendingRuleForTripwire(null)}
+            baseUrl={baseUrl}
+            authToken={authToken}
           />
         )}
 

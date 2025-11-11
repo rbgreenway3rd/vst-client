@@ -14,6 +14,10 @@ import {
   TableRow,
   Alert,
   CircularProgress,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from "@mui/material";
 import {
   listFovAlertRules,
@@ -23,6 +27,7 @@ import {
   deleteTripwireAlertRule,
   deleteRoiAlertRule,
 } from "../../services/emdx/api_emdx";
+import { getSensors } from "../../services/vst/api_vst";
 
 const RuleManagement = ({
   baseUrl,
@@ -35,40 +40,99 @@ const RuleManagement = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Sensor state
+  const [sensors, setSensors] = useState([]);
+  const [selectedSensor, setSelectedSensor] = useState("");
+  const [loadingSensors, setLoadingSensors] = useState(false);
+
   // Rules state
   const [fovRules, setFovRules] = useState([]);
   const [tripwireRules, setTripwireRules] = useState([]);
   const [roiRules, setRoiRules] = useState([]);
 
-  // Fetch rules on mount and when tab changes
+  // Fetch sensors on mount
   useEffect(() => {
-    fetchRules();
+    const fetchSensors = async () => {
+      if (!vstBaseUrl) return;
+
+      setLoadingSensors(true);
+      try {
+        const response = await getSensors(vstBaseUrl, vstAuthToken);
+        const sensorList = response?.sensors || response || [];
+        setSensors(sensorList);
+
+        // Auto-select first sensor (ensure it's a string, not undefined)
+        if (sensorList.length > 0 && !selectedSensor) {
+          const firstSensorId = sensorList[0].id || "";
+          setSelectedSensor(firstSensorId);
+        }
+      } catch (err) {
+        console.error("Failed to fetch sensors:", err);
+        setError("Failed to load sensors. Please check VST connection.");
+      } finally {
+        setLoadingSensors(false);
+      }
+    };
+
+    fetchSensors();
+  }, [vstBaseUrl, vstAuthToken, selectedSensor]);
+
+  // Fetch rules when sensor or tab changes
+  useEffect(() => {
+    if (selectedSensor) {
+      fetchRules();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, authToken, tabValue]);
+  }, [baseUrl, authToken, tabValue, selectedSensor]);
 
   const fetchRules = async () => {
+    if (!selectedSensor) {
+      setError("Please select a sensor to view rules");
+      return;
+    }
+
     setLoading(true);
     setError("");
 
     try {
       if (tabValue === 0) {
         // Fetch FOV rules
-        const data = await listFovAlertRules(baseUrl, authToken);
+        const data = await listFovAlertRules(
+          baseUrl,
+          authToken,
+          selectedSensor
+        );
         setFovRules(Array.isArray(data) ? data : data.rules || []);
       } else if (tabValue === 1) {
         // Fetch Tripwire rules
-        const data = await listTripwireAlertRules(baseUrl, authToken);
+        const data = await listTripwireAlertRules(
+          baseUrl,
+          authToken,
+          selectedSensor
+        );
         setTripwireRules(Array.isArray(data) ? data : data.rules || []);
       } else if (tabValue === 2) {
         // Fetch ROI rules
-        const data = await listRoiAlertRules(baseUrl, authToken);
+        const data = await listRoiAlertRules(
+          baseUrl,
+          authToken,
+          selectedSensor
+        );
         setRoiRules(Array.isArray(data) ? data : data.rules || []);
       }
     } catch (err) {
-      const errorMsg = `Failed to fetch rules: ${err.message}`;
-      setError(errorMsg);
-      if (onError) onError(err);
-      console.error("Error fetching rules:", err);
+      // Handle 422 errors gracefully (no rules configured)
+      if (err.message?.includes("422")) {
+        // Set empty array - this is normal when no rules exist
+        if (tabValue === 0) setFovRules([]);
+        else if (tabValue === 1) setTripwireRules([]);
+        else if (tabValue === 2) setRoiRules([]);
+      } else {
+        const errorMsg = `Failed to fetch rules: ${err.message}`;
+        setError(errorMsg);
+        if (onError) onError(err);
+        console.error("Error fetching rules:", err);
+      }
     } finally {
       setLoading(false);
     }
@@ -159,6 +223,34 @@ const RuleManagement = ({
           (Region of Interest)
         </Typography>
 
+        {/* Sensor Selection */}
+        <Box sx={{ mb: 3 }}>
+          <FormControl fullWidth>
+            <InputLabel>Select Sensor/Camera</InputLabel>
+            <Select
+              value={selectedSensor || ""}
+              onChange={(e) => setSelectedSensor(e.target.value || "")}
+              label="Select Sensor/Camera"
+              disabled={loadingSensors || sensors.length === 0}
+            >
+              {sensors.map((sensor) => (
+                <MenuItem key={sensor.id} value={sensor.id || ""}>
+                  {sensor.name || sensor.id || "Unknown Sensor"}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {sensors.length === 0 && !loadingSensors && (
+            <Typography
+              variant="caption"
+              color="error"
+              sx={{ mt: 1, display: "block" }}
+            >
+              No sensors available. Please configure sensors in VST first.
+            </Typography>
+          )}
+        </Box>
+
         {error && (
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
             {error}
@@ -179,10 +271,16 @@ const RuleManagement = ({
           <Button
             variant="contained"
             onClick={() => alert("Add rule dialog - coming soon!")}
+            disabled={!selectedSensor}
           >
             Add Rule
           </Button>
-          <Button variant="outlined" onClick={fetchRules} sx={{ ml: 1 }}>
+          <Button
+            variant="outlined"
+            onClick={fetchRules}
+            sx={{ ml: 1 }}
+            disabled={!selectedSensor}
+          >
             Refresh
           </Button>
         </Box>
