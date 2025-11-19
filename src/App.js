@@ -18,14 +18,13 @@ const RTSPProxyStream = lazy(() => import("./components/vst/RTSPProxyStream"));
 
 // Lazy load EMDX components
 const RuleManagement = lazy(() => import("./components/emdx/RuleManagement"));
-const ROIConfiguration = lazy(() =>
-  import("./components/emdx/ROIConfiguration")
-);
 const AnalyticsDashboard = lazy(() =>
   import("./components/emdx/AnalyticsDashboard")
 );
-const TripwireConfig = lazy(() => import("./components/emdx/ZoneConfig"));
-const ROIConfig = lazy(() => import("./components/emdx/ROIConfig"));
+const ZoneConfig = lazy(() => import("./components/emdx/ZoneConfig"));
+
+// Lazy load shared components
+const FullApp = lazy(() => import("./components/shared/FullApp"));
 
 const theme = createTheme({
   palette: {
@@ -45,11 +44,18 @@ function App() {
   const [emdxBaseUrl, setEmdxBaseUrl] = useState("http://192.168.1.26:5000");
   const [emdxAuthToken, setEmdxAuthToken] = useState("");
 
+  // Cognia Configuration
+  const [cogniaBaseUrl, setCogniaBaseUrl] = useState(
+    "http://192.168.1.26:8000"
+  );
+  const [cogniaAuthToken, setCogniaAuthToken] = useState("");
+
   const handleTabChange = (event, newValue) => {
     setTabValue(newValue);
   };
 
   const tabComponents = [
+    { label: "🚀 FullApp", component: FullApp, api: "both" },
     { label: "Sensor Management", component: SensorManagement, api: "vst" },
     { label: "Live Stream (VST)", component: LiveStream, api: "vst" },
     {
@@ -68,9 +74,7 @@ function App() {
       api: "emdx",
     },
     { label: "Rules", component: RuleManagement, api: "emdx" },
-    { label: "ROI Configuration", component: ROIConfiguration, api: "emdx" },
-    { label: "Tripwire Config", component: TripwireConfig, api: "emdx" },
-    { label: "ROI Config", component: ROIConfig, api: "emdx" },
+    { label: "Zone & Rule Config", component: ZoneConfig, api: "emdx" },
   ];
 
   // Provide a default error handler
@@ -101,6 +105,17 @@ function App() {
           // Pass VST credentials so EMDX components can fetch VST sensors
           vstBaseUrl: vstBaseUrl,
           vstAuthToken: vstAuthToken,
+        }
+      : currentTab?.api === "both"
+      ? {
+          // FullApp needs VST, EMDX, and Cognia credentials
+          vstBaseUrl: vstBaseUrl,
+          vstAuthToken: vstAuthToken,
+          emdxBaseUrl: emdxBaseUrl,
+          emdxAuthToken: emdxAuthToken,
+          cogniaBaseUrl: cogniaBaseUrl,
+          cogniaAuthToken: cogniaAuthToken,
+          onError: handleError,
         }
       : { onError: handleError };
 

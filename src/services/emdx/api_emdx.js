@@ -13,7 +13,17 @@ export const emdxApiCall = async (baseUrl, endpoint, options = {}) => {
     const response = await axios({ url, headers, ...options });
     return response.data;
   } catch (error) {
-    // Log detailed error information
+    const status = error.response?.status;
+
+    // 422 is expected when no rules/config exists - don't log as error
+    if (status === 422) {
+      // Return empty result for list operations
+      if (options.method === "GET" || !options.method) {
+        return { rules: [], count: 0 };
+      }
+    }
+
+    // Log detailed error information for other errors
     console.error("EMDX API Call Failed:", {
       url,
       method: options.method || "GET",
@@ -63,11 +73,16 @@ export const createFovAlertRule = (baseUrl, authToken, ruleData) =>
     authToken,
   });
 
-export const deleteFovAlertRule = (baseUrl, authToken, ruleId) =>
-  emdxApiCall(baseUrl, `/config/rule/alerts/fov?rule_id=${ruleId}`, {
+export const deleteFovAlertRule = (baseUrl, authToken, ruleId, sensorId) => {
+  const params = new URLSearchParams();
+  params.append("ruleId", ruleId);
+  if (sensorId) params.append("sensorId", sensorId);
+
+  return emdxApiCall(baseUrl, `/config/rule/alerts/fov?${params.toString()}`, {
     method: "DELETE",
     authToken,
   });
+};
 
 // Tripwire Alert Rules
 export const listTripwireAlertRules = (baseUrl, authToken, sensorId = null) => {
@@ -88,16 +103,42 @@ export const createTripwireAlertRule = (baseUrl, authToken, ruleData) =>
     headers: { "User-Type": "Admin" },
   });
 
-export const deleteTripwireAlertRule = (baseUrl, authToken, ruleId) =>
-  emdxApiCall(
+export const deleteTripwireAlertRule = (
+  baseUrl,
+  authToken,
+  ruleId,
+  sensorId,
+  tripwireId
+) => {
+  // API requires all three parameters
+  if (!ruleId || !sensorId || !tripwireId) {
+    console.error("Missing required parameters for deleteTripwireAlertRule:", {
+      ruleId,
+      sensorId,
+      tripwireId,
+    });
+    throw new Error(
+      `Missing required parameters: ${!ruleId ? "ruleId " : ""}${
+        !sensorId ? "sensorId " : ""
+      }${!tripwireId ? "tripwireId" : ""}`
+    );
+  }
+
+  const params = new URLSearchParams();
+  params.append("ruleId", ruleId);
+  params.append("sensorId", sensorId);
+  params.append("tripwireId", tripwireId);
+
+  return emdxApiCall(
     baseUrl,
-    `/api/v2/config/rule/alerts/tripwire?rule_id=${ruleId}`,
+    `/api/v2/config/rule/alerts/tripwire?${params.toString()}`,
     {
       method: "DELETE",
       authToken,
       headers: { "User-Type": "Admin" },
     }
   );
+};
 
 // ROI Alert Rules
 export const listRoiAlertRules = (baseUrl, authToken, sensorId = null) => {
@@ -114,11 +155,23 @@ export const createRoiAlertRule = (baseUrl, authToken, ruleData) =>
     authToken,
   });
 
-export const deleteRoiAlertRule = (baseUrl, authToken, ruleId) =>
-  emdxApiCall(baseUrl, `/config/rule/alerts/roi?rule_id=${ruleId}`, {
+export const deleteRoiAlertRule = (
+  baseUrl,
+  authToken,
+  ruleId,
+  sensorId,
+  roiId
+) => {
+  const params = new URLSearchParams();
+  params.append("ruleId", ruleId);
+  if (sensorId) params.append("sensorId", sensorId);
+  if (roiId) params.append("roiId", roiId);
+
+  return emdxApiCall(baseUrl, `/config/rule/alerts/roi?${params.toString()}`, {
     method: "DELETE",
     authToken,
   });
+};
 
 // =========================
 // === Alerts            ===
@@ -195,12 +248,7 @@ export const updateRoisConfig = (baseUrl, authToken, roisData) =>
   });
 
 // Create/Update ROI Configuration (v2 API)
-export const createRoiConfig = (
-  baseUrl,
-  authToken,
-  sensorId,
-  configData
-) =>
+export const createRoiConfig = (baseUrl, authToken, sensorId, configData) =>
   emdxApiCall(baseUrl, `/api/v2/config/roi?sensorId=${sensorId}`, {
     method: "POST",
     data: configData,
@@ -320,3 +368,185 @@ export const getFovOccupancyHistogram = (baseUrl, authToken, params = {}) =>
 // Get FOV occupancy count
 export const getFovOccupancyCount = (baseUrl, authToken, params = {}) =>
   emdxApiCall(baseUrl, "/fov/occupancy/count", { authToken, params });
+
+// =========================
+// === Tripwire Metrics  ===
+// =========================
+
+/**
+ * Get Tripwire Histogram - Retrieve histogram of crossing counts for a tripwire
+ *
+ * Returns time-bucketed counts of objects crossing the tripwire line, broken down by:
+ * - Direction (IN/OUT)
+ * - Object type (Person, Vehicle, etc.) - optional
+ *
+ * @param {string} baseUrl - EMDX API base URL
+ * @param {string} authToken - Authentication token
+ * @param {Object} params - Query parameters
+ * @param {string} params.sensorId - Sensor ID (required)
+ * @param {string} params.tripwireId - Tripwire ID (required)
+ * @param {string} params.fromTimestamp - Start time in ISO 8601 format (required) e.g., "2020-10-30T20:00:00.000Z"
+ * @param {string} params.toTimestamp - End time in ISO 8601 format (optional, defaults to now)
+ * @param {number} params.bucketSizeInSec - Histogram bucket size in seconds (optional, min=1, max=86400)
+ * @param {string} params.objectType - Object types to filter (optional)
+ *                                      - "*" for all types
+ *                                      - "Person,Vehicle" for specific types
+ *                                      - omit for cumulative counts only
+ * @returns {Promise} Histogram data with counts per time bucket
+ *
+ * Example response:
+ * {
+ *   "bucketSizeInSec": "1",
+ *   "tripwires": [{
+ *     "id": "door_1",
+ *     "histogram": [{
+ *       "start": "2020-01-26T19:16:29.000Z",
+ *       "end": "2020-01-26T19:16:30.000Z",
+ *       "events": [
+ *         { "type": "IN", "objects": [{ "type": "Person", "count": 1 }] },
+ *         { "type": "OUT", "objects": [{ "type": "Person", "count": 2 }] }
+ *       ]
+ *     }]
+ *   }]
+ * }
+ */
+export const getTripwireHistogram = (baseUrl, authToken, params = {}) => {
+  // Build query string from params
+  const queryParams = new URLSearchParams();
+
+  // Required parameters
+  if (params.sensorId) queryParams.append("sensorId", params.sensorId);
+  if (params.tripwireId) queryParams.append("tripwireId", params.tripwireId);
+  if (params.fromTimestamp)
+    queryParams.append("fromTimestamp", params.fromTimestamp);
+
+  // Optional parameters
+  if (params.toTimestamp) queryParams.append("toTimestamp", params.toTimestamp);
+  if (params.bucketSizeInSec)
+    queryParams.append("bucketSizeInSec", params.bucketSizeInSec);
+  if (params.objectType) queryParams.append("objectType", params.objectType);
+
+  const endpoint = `/api/v2/metrics/tripwire/histogram?${queryParams.toString()}`;
+
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};
+
+/**
+ * Get Tripwire Total Counts - Retrieve aggregate crossing counts for a tripwire
+ *
+ * Returns total counts of objects crossing the tripwire for the specified time range,
+ * broken down by direction (IN/OUT) and optionally by object type.
+ *
+ * @param {string} baseUrl - EMDX API base URL
+ * @param {string} authToken - Authentication token
+ * @param {Object} params - Query parameters
+ * @param {string} params.sensorId - Sensor ID (required)
+ * @param {string} params.tripwireId - Tripwire ID (required)
+ * @param {string} params.fromTimestamp - Start time in ISO 8601 format (required)
+ * @param {string} params.toTimestamp - End time in ISO 8601 format (optional, defaults to now)
+ * @param {string} params.objectType - Object types to filter (optional)
+ *                                      - "*" for all types
+ *                                      - "Person,Vehicle" for specific types
+ *                                      - omit for cumulative counts only
+ * @returns {Promise} Total count data
+ *
+ * Example response:
+ * {
+ *   "tripwireKpis": [{
+ *     "id": "door1",
+ *     "events": [
+ *       {
+ *         "type": "IN",
+ *         "objects": [{ "type": "Person", "count": 2 }]
+ *       },
+ *       {
+ *         "type": "OUT",
+ *         "objects": [{ "type": "Person", "count": 1 }]
+ *       }
+ *     ]
+ *   }]
+ * }
+ */
+export const getTripwireCount = (baseUrl, authToken, params = {}) => {
+  // Build query string from params
+  const queryParams = new URLSearchParams();
+
+  // Required parameters
+  if (params.sensorId) queryParams.append("sensorId", params.sensorId);
+  if (params.tripwireId) queryParams.append("tripwireId", params.tripwireId);
+  if (params.fromTimestamp)
+    queryParams.append("fromTimestamp", params.fromTimestamp);
+
+  // Optional parameters
+  if (params.toTimestamp) queryParams.append("toTimestamp", params.toTimestamp);
+  if (params.objectType) queryParams.append("objectType", params.objectType);
+
+  const endpoint = `/api/v2/metrics/tripwire/count?${queryParams.toString()}`;
+
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};
+
+/**
+ * Get Tripwire Alerts - Retrieve triggered alerts for tripwire rules
+ *
+ * Returns alerts that were triggered based on tripwire alert rules (flowrate or increment).
+ * Supports pagination and time-based filtering.
+ *
+ * @param {string} baseUrl - EMDX API base URL
+ * @param {string} authToken - Authentication token
+ * @param {Object} params - Query parameters
+ * @param {string} params.sensorId - Sensor ID (required)
+ * @param {string} params.fromTimestamp - Start time in ISO 8601 format (required)
+ * @param {string} params.toTimestamp - End time in ISO 8601 format (optional, defaults to now)
+ * @param {number} params.limit - Max number of alerts to return (optional)
+ * @returns {Promise} Alert data
+ *
+ * Example response:
+ * {
+ *   "alerts": [{
+ *     "id": "unique-alert-id",
+ *     "sensorId": "Amcrest_1",
+ *     "type": "tripwire",
+ *     "ruleType": "increment",
+ *     "ruleId": "fb298ea4-30aa-4085-b860-42e37c5bf8d1",
+ *     "count": 10,
+ *     "direction": "entry",
+ *     "directionName": "Inside the room",
+ *     "description": "10 people entered tripwire",
+ *     "startTimestamp": "2021-09-16T06:06:59.800Z",
+ *     "endTimestamp": "2021-09-16T06:07:00.534Z",
+ *     "duration": 0.734,
+ *     "attributes": [
+ *       { "name": "tripwireId", "value": "door1" },
+ *       { "name": "tripwireName", "value": "Main Door" },
+ *       { "name": "objects", "value": [{ "id": "1186", "type": "Person" }] }
+ *     ]
+ *   }]
+ * }
+ */
+export const getTripwireAlertsV2 = (baseUrl, authToken, params = {}) => {
+  // Build query string from params
+  const queryParams = new URLSearchParams();
+
+  // Required parameters
+  if (params.sensorId) queryParams.append("sensorId", params.sensorId);
+  if (params.fromTimestamp)
+    queryParams.append("fromTimestamp", params.fromTimestamp);
+
+  // Optional parameters
+  if (params.toTimestamp) queryParams.append("toTimestamp", params.toTimestamp);
+  if (params.limit) queryParams.append("limit", params.limit);
+
+  const endpoint = `/api/v2/alerts/tripwire?${queryParams.toString()}`;
+
+  return emdxApiCall(baseUrl, endpoint, {
+    authToken,
+    headers: { "User-Type": "Admin" },
+  });
+};

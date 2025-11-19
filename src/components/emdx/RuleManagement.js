@@ -18,6 +18,7 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Chip,
 } from "@mui/material";
 import {
   listFovAlertRules,
@@ -63,7 +64,8 @@ const RuleManagement = ({
 
         // Auto-select first sensor (ensure it's a string, not undefined)
         if (sensorList.length > 0 && !selectedSensor) {
-          const firstSensorId = sensorList[0].id || "";
+          const firstSensorId =
+            sensorList[0].sensorId || sensorList[0].id || "";
           setSelectedSensor(firstSensorId);
         }
       } catch (err) {
@@ -138,16 +140,39 @@ const RuleManagement = ({
     }
   };
 
-  const handleDeleteRule = async (ruleId, ruleType) => {
+  const handleDeleteRule = async (rule, ruleType) => {
     if (!window.confirm(`Delete this ${ruleType} rule?`)) return;
 
     try {
+      // ruleId is the actual rule identifier (UUID), not the tripwire/ROI id
+      const ruleId = rule.ruleId || rule.rule_id;
+      // Use selectedSensor from component state as fallback
+      const sensorId = rule.sensor_id || rule.sensorId || selectedSensor;
+
+      // The 'id' field is the tripwire/ROI identifier, not the rule ID
+      const tripwireId = rule.id || rule.tripwire_id || rule.tripwireId;
+      const roiId = rule.id || rule.roi_id || rule.roiId;
+
+      console.log("Deleting rule:", {
+        rule,
+        ruleId,
+        sensorId,
+        tripwireId,
+        roiId,
+      });
+
       if (ruleType === "FOV") {
-        await deleteFovAlertRule(baseUrl, authToken, ruleId);
+        await deleteFovAlertRule(baseUrl, authToken, ruleId, sensorId);
       } else if (ruleType === "Tripwire") {
-        await deleteTripwireAlertRule(baseUrl, authToken, ruleId);
+        await deleteTripwireAlertRule(
+          baseUrl,
+          authToken,
+          ruleId,
+          sensorId,
+          tripwireId
+        );
       } else if (ruleType === "ROI") {
-        await deleteRoiAlertRule(baseUrl, authToken, ruleId);
+        await deleteRoiAlertRule(baseUrl, authToken, ruleId, sensorId, roiId);
       }
 
       alert(`${ruleType} rule deleted successfully`);
@@ -155,6 +180,7 @@ const RuleManagement = ({
     } catch (err) {
       alert(`Failed to delete rule: ${err.message}`);
       if (onError) onError(err);
+      console.error("Delete rule error:", err);
     }
   };
 
@@ -187,19 +213,27 @@ const RuleManagement = ({
           </TableRow>
         </TableHead>
         <TableBody>
-          {rules.map((rule) => (
-            <TableRow key={rule.rule_id || rule.id}>
-              <TableCell>{rule.rule_id || rule.id}</TableCell>
+          {rules.map((rule, index) => (
+            <TableRow
+              key={`${rule.ruleId || rule.rule_id || rule.id}-${index}`}
+            >
+              <TableCell>{rule.ruleId || rule.rule_id || rule.id}</TableCell>
               <TableCell>{rule.name || "Unnamed"}</TableCell>
-              <TableCell>{rule.sensor_id || "N/A"}</TableCell>
-              <TableCell>{rule.enabled ? "Yes" : "No"}</TableCell>
+              <TableCell>{rule.sensor_id || selectedSensor || "N/A"}</TableCell>
+              <TableCell>
+                {rule.enabled === undefined ? (
+                  <Chip label="Active" color="success" size="small" />
+                ) : rule.enabled ? (
+                  "Yes"
+                ) : (
+                  "No"
+                )}
+              </TableCell>
               <TableCell>
                 <Button
                   size="small"
                   color="error"
-                  onClick={() =>
-                    handleDeleteRule(rule.rule_id || rule.id, ruleType)
-                  }
+                  onClick={() => handleDeleteRule(rule, ruleType)}
                 >
                   Delete
                 </Button>
@@ -234,8 +268,14 @@ const RuleManagement = ({
               disabled={loadingSensors || sensors.length === 0}
             >
               {sensors.map((sensor) => (
-                <MenuItem key={sensor.id} value={sensor.id || ""}>
-                  {sensor.name || sensor.id || "Unknown Sensor"}
+                <MenuItem
+                  key={sensor.sensorId || sensor.id}
+                  value={sensor.sensorId || sensor.id || ""}
+                >
+                  {sensor.name ||
+                    sensor.sensorId ||
+                    sensor.id ||
+                    "Unknown Sensor"}
                 </MenuItem>
               ))}
             </Select>

@@ -1,5 +1,18 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Card, CardContent, Typography, Tabs, Tab, Box } from "@mui/material";
+import {
+  Card,
+  CardContent,
+  Typography,
+  Box,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Button,
+  Alert,
+  Grid,
+} from "@mui/material";
+import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import { getSensors } from "../../../services/vst/api_vst";
 import {
   createTripwireConfig,
@@ -11,10 +24,11 @@ import {
 } from "../../../services/emdx/api_emdx";
 import { useSnapshot } from "./hooks/useSnapshot";
 import { useZoneDrawing } from "./hooks/useZoneDrawing";
-import ZoneSetupTab from "./ZoneSetupTab";
-import AnalyticsTab from "./AnalyticsTab";
-import AlertsTab from "./AlertsTab";
+import ZoneCanvas from "./ZoneCanvas";
+import ZonesSidebar from "./ZonesSidebar";
+import RulesSidebar from "./RulesSidebar";
 import ZoneItemDialog from "./ZoneItemDialog";
+import AlertsTab from "./AlertsTab";
 
 /**
  * Main ZoneConfig component - container that manages state and coordinates sub-components
@@ -31,9 +45,6 @@ const ZoneConfig = ({
   const canvasRef = useRef(null);
   const imageRef = useRef(null);
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState(0);
-
   // Sensor state
   const [sensors, setSensors] = useState([]);
   const [selectedSensor, setSelectedSensor] = useState("");
@@ -44,7 +55,8 @@ const ZoneConfig = ({
 
   // Dialog state
   const [itemDialogOpen, setItemDialogOpen] = useState(false);
-  const [pendingRuleForTripwire, setPendingRuleForTripwire] = useState(null);
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
+  const [selectedZoneForRule, setSelectedZoneForRule] = useState(null);
 
   // Custom hooks
   const {
@@ -77,20 +89,24 @@ const ZoneConfig = ({
     loadExistingZones,
   } = useZoneDrawing(canvasRef, imageRef);
 
-  // Fetch sensors on mount
+  // Fetch VST sensors on mount (SDR automatically syncs them with EMDX)
+  const fetchSensors = async () => {
+    try {
+      const data = await getSensors(vstBaseUrl, vstAuthToken);
+      const allSensors = Array.isArray(data) ? data : data.sensors || [];
+      const activeSensors = allSensors.filter(
+        (s) => s.state !== "removed" && s.state !== "REMOVED"
+      );
+      setSensors(activeSensors);
+    } catch (error) {
+      console.error("Failed to fetch VST sensors:", error);
+      setError("Failed to fetch sensors: " + error.message);
+    }
+  };
+
   useEffect(() => {
-    const fetchSensors = async () => {
-      try {
-        const data = await getSensors(vstBaseUrl, vstAuthToken);
-        const allSensors = Array.isArray(data) ? data : data.sensors || [];
-        const activeSensors = allSensors.filter((s) => s.state !== "removed");
-        setSensors(activeSensors);
-      } catch (error) {
-        console.error("Failed to fetch sensors:", error);
-        setError("Failed to fetch sensors: " + error.message);
-      }
-    };
     fetchSensors();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vstBaseUrl, vstAuthToken]);
 
   // Fetch existing tripwires and ROIs when sensor is selected
@@ -257,16 +273,17 @@ const ZoneConfig = ({
 
     // If user wants to add an alert rule for this tripwire
     if (itemData.addAlertRule && drawingMode === "tripwire") {
-      setPendingRuleForTripwire({
+      setSelectedZoneForRule({
         id: itemData.id,
         name: itemData.name,
         entryName: itemData.entryName,
         exitName: itemData.exitName,
+        type: "tripwire",
       });
 
-      // Switch to Alerts tab after a short delay
+      // Open rule dialog after a short delay
       setTimeout(() => {
-        setActiveTab(2);
+        setRuleDialogOpen(true);
         setSuccess(
           `${successMsg} Now configure the alert rule for "${itemData.name}".`
         );
@@ -311,7 +328,9 @@ const ZoneConfig = ({
         );
       }
 
-      setSuccess(`✅ ${type === "tripwire" ? "Tripwire" : "ROI"} deleted successfully`);
+      setSuccess(
+        `✅ ${type === "tripwire" ? "Tripwire" : "ROI"} deleted successfully`
+      );
     } catch (err) {
       console.error(`Failed to delete ${type}:`, err);
       setError(`Failed to delete ${type}: ${err.message}`);
@@ -327,7 +346,11 @@ const ZoneConfig = ({
       return;
     }
 
-    if (!window.confirm("Are you sure you want to clear all tripwires and ROIs? This cannot be undone.")) {
+    if (
+      !window.confirm(
+        "Are you sure you want to clear all tripwires and ROIs? This cannot be undone."
+      )
+    ) {
       return;
     }
 
@@ -421,6 +444,12 @@ const ZoneConfig = ({
     }
   };
 
+  // Handle add rule button click
+  const handleAddRule = (zone, zoneType) => {
+    setSelectedZoneForRule({ ...zone, type: zoneType });
+    setRuleDialogOpen(true);
+  };
+
   return (
     <Card>
       <CardContent>
@@ -428,63 +457,109 @@ const ZoneConfig = ({
           {title}
         </Typography>
 
-        {/* Tab Navigation */}
-        <Box sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
-          <Tabs
-            value={activeTab}
-            onChange={(e, newValue) => setActiveTab(newValue)}
-            aria-label="Zone configuration tabs"
+        {/* Sensor Selection & Snapshot Capture Bar */}
+        <Box
+          sx={{
+            mb: 3,
+            display: "flex",
+            gap: 2,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <FormControl sx={{ minWidth: 250, flexGrow: 1 }}>
+            <InputLabel>Select Sensor</InputLabel>
+            <Select
+              value={selectedSensor || ""}
+              onChange={(e) => setSelectedSensor(e.target.value || "")}
+              label="Select Sensor"
+            >
+              <MenuItem value="">
+                <em>None</em>
+              </MenuItem>
+              {sensors.map((sensor) => (
+                <MenuItem
+                  key={sensor.sensorId || sensor.id}
+                  value={sensor.sensorId || sensor.id || ""}
+                >
+                  {sensor.name || sensor.sensorId || sensor.id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <Button
+            variant="contained"
+            startIcon={<CameraAltIcon />}
+            onClick={handleCaptureSnapshot}
+            disabled={!selectedSensor || isLoadingSnapshot}
           >
-            <Tab label="📍 Zone Setup" />
-            <Tab label="📊 Analytics" disabled={!selectedSensor} />
-            <Tab label="🔔 Alerts" disabled={!selectedSensor} />
-          </Tabs>
+            {isLoadingSnapshot ? "Capturing..." : "Capture Snapshot"}
+          </Button>
         </Box>
 
-        {/* Tab Content */}
-        {activeTab === 0 && (
-          <ZoneSetupTab
-            sensors={sensors}
-            selectedSensor={selectedSensor}
-            onSensorChange={setSelectedSensor}
-            snapshotUrl={snapshotUrl}
-            isLoadingSnapshot={isLoadingSnapshot}
-            imageDimensions={imageDimensions}
-            success={success}
-            error={error}
-            onCaptureSnapshot={handleCaptureSnapshot}
-            isDrawing={isDrawing}
-            drawingMode={drawingMode}
-            currentItem={currentItem}
-            isSettingDirection={isSettingDirection}
-            tripwires={tripwires}
-            rois={rois}
-            onStartDrawing={handleStartDrawing}
-            onFinishDrawing={handleFinishDrawing}
-            onCancelDrawing={handleCancelDrawing}
-            onDeleteZone={handleDeleteZone}
-            onClearAll={handleClearAllZones}
-            onSubmit={handleSubmitToEMDX}
-            canvasRef={canvasRef}
-            imageRef={imageRef}
-            onImageLoad={handleImageLoad}
-            onCanvasClick={handleCanvasClick}
-            onCanvasRightClick={handleCanvasRightClickWrapper}
-            onCanvasMouseMove={handleCanvasMouseMove}
-          />
+        {/* Status Messages */}
+        {success && (
+          <Alert
+            severity="success"
+            sx={{ mb: 2 }}
+            onClose={() => setSuccess("")}
+          >
+            {success}
+          </Alert>
         )}
-        {activeTab === 1 && <AnalyticsTab selectedSensor={selectedSensor} />}
-        {activeTab === 2 && (
-          <AlertsTab
-            selectedSensor={selectedSensor}
-            pendingRuleForTripwire={pendingRuleForTripwire}
-            onClearPendingRule={() => setPendingRuleForTripwire(null)}
-            baseUrl={baseUrl}
-            authToken={authToken}
-          />
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+            {error}
+          </Alert>
         )}
 
-        {/* Item Details Dialog */}
+        {/* Main Content: Side-by-Side Layout */}
+        <Grid container spacing={2}>
+          {/* Left Panel: Canvas */}
+          <Grid size={{ xs: 12, md: 7, lg: 8 }}>
+            <ZoneCanvas
+              snapshotUrl={snapshotUrl}
+              isLoadingSnapshot={isLoadingSnapshot}
+              imageDimensions={imageDimensions}
+              isDrawing={isDrawing}
+              drawingMode={drawingMode}
+              currentItem={currentItem}
+              isSettingDirection={isSettingDirection}
+              canvasRef={canvasRef}
+              imageRef={imageRef}
+              onImageLoad={handleImageLoad}
+              onCanvasClick={handleCanvasClick}
+              onCanvasRightClick={handleCanvasRightClickWrapper}
+              onCanvasMouseMove={handleCanvasMouseMove}
+              onStartDrawing={handleStartDrawing}
+              onCancelDrawing={handleCancelDrawing}
+            />
+          </Grid>
+
+          {/* Right Panel: Zones & Rules Sidebars */}
+          <Grid size={{ xs: 12, md: 5, lg: 4 }}>
+            <ZonesSidebar
+              tripwires={tripwires}
+              rois={rois}
+              onDelete={handleDeleteZone}
+              onClearAll={handleClearAllZones}
+              onSubmit={handleSubmitToEMDX}
+              onAddRule={handleAddRule}
+            />
+
+            <RulesSidebar
+              selectedSensor={selectedSensor}
+              baseUrl={baseUrl}
+              authToken={authToken}
+              onRuleChange={() => {
+                // Optional: could trigger a refresh or notification
+              }}
+            />
+          </Grid>
+        </Grid>
+
+        {/* Dialogs */}
         <ZoneItemDialog
           open={itemDialogOpen}
           onClose={handleCancelDrawing}
@@ -494,6 +569,20 @@ const ZoneConfig = ({
           directionP2={directionP2}
           onSetDirection={handleSetDirection}
         />
+
+        {/* Rule Creation Dialog (opens when "Add Rule" clicked) */}
+        {ruleDialogOpen && selectedZoneForRule && (
+          <AlertsTab
+            selectedSensor={selectedSensor}
+            pendingRuleForTripwire={selectedZoneForRule}
+            onClearPendingRule={() => {
+              setRuleDialogOpen(false);
+              setSelectedZoneForRule(null);
+            }}
+            baseUrl={baseUrl}
+            authToken={authToken}
+          />
+        )}
       </CardContent>
     </Card>
   );

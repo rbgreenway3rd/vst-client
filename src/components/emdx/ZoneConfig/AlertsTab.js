@@ -16,8 +16,6 @@ import {
   InputLabel,
   Select,
   MenuItem,
-  FormControlLabel,
-  Checkbox,
   Table,
   TableHead,
   TableRow,
@@ -51,7 +49,6 @@ const AlertsTab = ({
   const [timeInterval, setTimeInterval] = useState("60");
   const [countThreshold, setCountThreshold] = useState("");
   const [direction, setDirection] = useState("entry");
-  const [enabled, setEnabled] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -138,7 +135,6 @@ const AlertsTab = ({
     setCountThreshold("");
     setDirection("entry");
     setRuleType("flowrate");
-    setEnabled(true);
     if (onClearPendingRule) {
       onClearPendingRule();
     }
@@ -158,14 +154,15 @@ const AlertsTab = ({
         sensorId: selectedSensor,
         rules: [
           {
-            ruleId: ruleId,
             id: pendingRuleForTripwire?.id, // tripwire ID
+            ruleId: ruleId,
+            name: ruleName,
             type: "tripwire", // Always "tripwire" for tripwire rules
             ruleType: ruleType, // "flowrate" or "increment"
             timeInterval: parseInt(timeInterval),
             countThreshold: parseInt(countThreshold),
             direction: direction, // "entry" or "exit"
-            name: ruleName,
+            parameters: [], // Optional additional parameters (currently unused)
           },
         ],
       };
@@ -422,16 +419,10 @@ const AlertsTab = ({
             </Select>
           </FormControl>
 
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                color="primary"
-              />
-            }
-            label="Enable this rule immediately"
-          />
+          <Alert severity="info" sx={{ mt: 2 }}>
+            <strong>Note:</strong> Alert rules are active immediately upon
+            creation.
+          </Alert>
         </DialogContent>
         <DialogActions>
           <Button

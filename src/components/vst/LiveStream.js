@@ -18,6 +18,7 @@ class VSTWebRTCClient {
     this.vstUrl = vstServerUrl; // e.g., 'http://192.168.1.26:30000/api'
     this.peerId = this.generateUUID();
     this.mediaSessionId = null;
+    this.streamId = null; // Store for stats endpoint header
     this.peerConnection = null;
     this.iceCandidateInterval = null;
     this.videoElement = null;
@@ -54,6 +55,7 @@ class VSTWebRTCClient {
 
   async startStream(streamId, videoElement) {
     this.videoElement = videoElement;
+    this.streamId = streamId; // Store streamId for stats endpoint
 
     try {
       console.log("Starting VST WebRTC stream...");
@@ -319,13 +321,27 @@ class VSTWebRTCClient {
   }
 
   async getStreamStats() {
-    if (!this.mediaSessionId) return null;
+    if (!this.mediaSessionId || !this.peerId) return null;
     try {
-      const response = await fetch(
-        `${this.vstUrl}/v1/live/stream/stats?stream_id=${this.mediaSessionId}`
-      );
+      // API requires peerId and mediaSessionId as query params, streamId as header
+      const url = new URL(`${this.vstUrl}/v1/live/stream/stats`);
+      url.searchParams.append("peerId", this.peerId);
+      url.searchParams.append("mediaSessionId", this.mediaSessionId);
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          streamId: this.streamId || "",
+        },
+      });
+
       if (response.ok) {
         return await response.json();
+      }
+      // Don't log 400 errors as they're expected when stats endpoint is not available
+      if (response.status !== 400) {
+        console.warn(
+          `Stream stats request failed with status ${response.status}`
+        );
       }
     } catch (error) {
       console.warn("Error getting stream stats:", error);
@@ -334,13 +350,27 @@ class VSTWebRTCClient {
   }
 
   async getStreamStatus() {
-    if (!this.mediaSessionId) return null;
+    if (!this.mediaSessionId || !this.peerId) return null;
     try {
-      const response = await fetch(
-        `${this.vstUrl}/v1/live/stream/status?stream_id=${this.mediaSessionId}`
-      );
+      // API likely requires peerId and mediaSessionId as query params, streamId as header
+      const url = new URL(`${this.vstUrl}/v1/live/stream/status`);
+      url.searchParams.append("peerId", this.peerId);
+      url.searchParams.append("mediaSessionId", this.mediaSessionId);
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          streamId: this.streamId || "",
+        },
+      });
+
       if (response.ok) {
         return await response.json();
+      }
+      // Don't log 400 errors as they're expected when status endpoint is not available
+      if (response.status !== 400) {
+        console.warn(
+          `Stream status request failed with status ${response.status}`
+        );
       }
     } catch (error) {
       console.warn("Error getting stream status:", error);

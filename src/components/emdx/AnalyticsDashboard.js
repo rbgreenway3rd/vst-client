@@ -139,28 +139,28 @@ const AnalyticsDashboard = ({
 
         {/* Stats Grid */}
         <Grid container spacing={2} sx={{ mb: 3 }}>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
               title="Total Alerts"
               value={alertsCount?.total_count || alertsCount?.count || 0}
               subtitle="All time"
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
               title="Recent Alerts"
               value={recentAlerts.length}
               subtitle="Last 10"
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
               title="Occupancy Count"
               value={occupancyCount?.count}
               subtitle="Current"
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
               title="Metrics"
               value={metrics ? Object.keys(metrics).length : 0}
